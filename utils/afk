@@ -15,6 +15,8 @@ check_and_install_xdotool() {
 
 # Function to keep the system awake
 keep_awake() {
+    # Show instructions to kill process
+    echo "Press Ctrl+C to stop the script."
     # Move the mouse slightly every 60 seconds
     while true; do
         # Get current mouse position
