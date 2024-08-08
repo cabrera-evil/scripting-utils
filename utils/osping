@@ -5,44 +5,73 @@ import re
 import sys
 import subprocess
 
-# python3 wichSystem.py 10.10.10.188
+# ======================================
+# OS Detection Script
+# ======================================
+# This script detects the operating system of a given IP address
+# by analyzing the TTL (Time To Live) value from a ping response.
+#
+# Usage:
+#   python3 osping <ip-address>
+# ======================================
 
-if len(sys.argv) != 2:
-    print("\n[!] Uso: python3 " + sys.argv[0] + " <direccion-ip>\n")
-    sys.exit(1)
+# ================================
+# Function to retrieve the TTL value from a ping response
+# ================================
 
 
 def get_ttl(ip_address):
+    try:
+        # Execute the ping command
+        proc = subprocess.Popen(["ping", "-c", "1", ip_address],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate()
 
-    proc = subprocess.Popen(["/usr/bin/ping -c 1 %s" %
-                            ip_address, ""], stdout=subprocess.PIPE, shell=True)
-    (out, err) = proc.communicate()
+        # Check if the ping command was successful
+        if proc.returncode != 0:
+            print(f"[!] Failed to reach {ip_address}: {err.strip()}")
+            sys.exit(1)
 
-    out = out.split()
-    out = out[12].decode('utf-8')
+        # Extract the TTL value from the output
+        ttl_match = re.search(r"ttl=(\d+)", out)
+        if ttl_match:
+            return int(ttl_match.group(1))
+        else:
+            print("[!] Could not extract TTL value from the ping response.")
+            sys.exit(1)
 
-    ttl_value = re.findall(r"\d{1,3}", out)[0]
+    except Exception as e:
+        print(f"[!] An error occurred: {e}")
+        sys.exit(1)
 
-    return ttl_value
+# ================================
+# Function to determine the operating system based on TTL
+# ================================
 
 
 def get_os(ttl):
-
-    ttl = int(ttl)
-
-    if ttl >= 0 and ttl <= 64:
+    if 0 <= ttl <= 64:
         return "Linux"
-    elif ttl >= 65 and ttl <= 128:
+    elif 65 <= ttl <= 128:
         return "Windows"
     else:
-        return "Not Found"
+        return "Unknown"
 
 
+# ================================
+# Main script execution
+# ================================
 if __name__ == '__main__':
+    # Check for proper usage
+    if len(sys.argv) != 2:
+        print(f"\n[!] Usage: python3 {sys.argv[0]} <ip-address>\n")
+        sys.exit(1)
 
     ip_address = sys.argv[1]
 
+    # Get TTL and determine OS
     ttl = get_ttl(ip_address)
-
     os_name = get_os(ttl)
-    print("\n\t%s (ttl -> %s): %s" % (ip_address, ttl, os_name))
+
+    # Display the result
+    print(f"\n\t{ip_address} (TTL -> {ttl}): {os_name}")

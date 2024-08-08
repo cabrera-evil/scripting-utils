@@ -1,42 +1,68 @@
 #!/bin/bash
 
-# Function to check if xdotool is installed
+# ==========================================
+# System Keep Awake Script
+# ==========================================
+# This script keeps the system awake by slightly moving the mouse
+# every 60 seconds. It also checks and installs `xdotool` if not
+# already installed.
+# ==========================================
+
+# ================================
+# Function to check and install xdotool
+# ================================
 check_and_install_xdotool() {
-    if ! command -v xdotool &> /dev/null; then
+    if ! command -v xdotool &>/dev/null; then
         echo "xdotool not found. Installing..."
-        
+
         # Update package list and install xdotool
-        sudo apt-get update
+        sudo apt-get update -y
         sudo apt-get install -y xdotool
+
+        if command -v xdotool &>/dev/null; then
+            echo "xdotool installed successfully."
+        else
+            echo "Failed to install xdotool. Exiting..."
+            exit 1
+        fi
     else
         echo "xdotool is already installed."
     fi
 }
 
+# ================================
 # Function to keep the system awake
+# ================================
 keep_awake() {
-    # Show instructions to kill process
     echo "Press Ctrl+C to stop the script."
-    # Move the mouse slightly every 60 seconds
+
     while true; do
-        # Get current mouse position
-        CURRENT_MOUSE_POSITION=$(xdotool getmouselocation --shell)
-        
-        # Parse the X and Y positions
-        eval "$CURRENT_MOUSE_POSITION"
-        X_ORIG=$X
-        Y_ORIG=$Y
-        
-        # Move the mouse slightly (1 pixel to the right and then back)
-        xdotool mousemove $((X_ORIG+1)) $Y_ORIG
+        # Get the current mouse position
+        local current_mouse_position
+        current_mouse_position=$(xdotool getmouselocation --shell)
+
+        # Extract the X and Y coordinates from the output
+        eval "$current_mouse_position"
+        local x_orig="$X"
+        local y_orig="$Y"
+
+        # Move the mouse slightly and then move it back
+        xdotool mousemove $((x_orig + 1)) "$y_orig"
         sleep 1
-        xdotool mousemove $X_ORIG $Y_ORIG
-        
-        # Wait for 60 seconds
+        xdotool mousemove "$x_orig" "$y_orig"
+
+        # Wait for 60 seconds before repeating
         sleep 60
     done
 }
 
+# ==========================================
 # Main script execution
-check_and_install_xdotool
-keep_awake
+# ==========================================
+main() {
+    check_and_install_xdotool
+    keep_awake
+}
+
+# Execute the main function
+main
