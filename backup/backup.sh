@@ -33,6 +33,7 @@ for dir in $dirs; do
 done
 
 # Compressing folders but don't include 'node_modules'
+dunstify "Backup" "Creating backup..." -t 2000
 zip -q -r "$fdir/$fname" $dirs -x $excluded
 
 dunstify "Backup" "Backup created successfully" -t 2000
