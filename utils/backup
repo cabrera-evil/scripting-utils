@@ -10,14 +10,13 @@
 #   ./script.sh [-c] [-d IP_ADDRESS]
 #   -c: Create a backup
 #   -d: Download a backup from the specified IP address
+#   -s: Share a backup
 # =============================
 
 # Set global variables
 BACKUP_DIR="$HOME/Documents/Backups"
 BACKUP_FILE="bk-$(date +%Y-%m-%d).zip"
-TMP_DIR="/tmp"
 DESTINATION="$HOME"
-EXCLUDE_PATTERN="*/node_modules/* *.zip"
 DIRS_TO_BACKUP=(
   "$HOME/git"
   "$HOME/npm"
@@ -26,6 +25,9 @@ DIRS_TO_BACKUP=(
   "$HOME/Documents"
   "$HOME/Pictures"
 )
+EXCLUDE_PATTERN="*/node_modules/* *.zip"
+PORT=8000
+TMP_DIR="/tmp"
 
 # =============================
 # Function to handle errors
@@ -49,6 +51,7 @@ usage() {
   echo "Usage: $0 [-c] [-d IP_ADDRESS]"
   echo "  -c: Create a backup"
   echo "  -d: Download a backup from the specified IP address"
+  echo "  -s: Share a backup"
   exit 1
 }
 
@@ -82,11 +85,11 @@ create_backup() {
 # =============================
 download_backup() {
   local ip="$1"
-  local url="http://${ip}:3000"
+  local url="http://${ip}:${PORT}"
   local filename="${TMP_DIR}/$(basename "$BACKUP_FILE")"
 
   # Download the backup file
-  echo "Downloading backup from $url..."
+  echo "Downloading HTTP from $ip port $PORT ($url)..."
   wget -O "$filename" "$url/$(basename "$filename")"
 
   # Verify download success
@@ -104,13 +107,26 @@ download_backup() {
 }
 
 # =============================
+# Function to share the backup
+# =============================
+share_backup() {
+  local ip=$(hostname -I | cut -d' ' -f1)
+  local url="http://${ip}:${PORT}"
+
+  # Start a simple HTTP server to share the backup
+  echo "Serving HTTP on $ip port $PORT (url)"
+  cd "$BACKUP_DIR"
+  python3 -m http.server "$PORT" >/dev/null 2>&1
+}
+
+# =============================
 # Main script logic
 # =============================
 main() {
   local action
 
   # Parse command line options
-  while getopts ":cd:" opt; do
+  while getopts ":csd:" opt; do
     case $opt in
     c)
       action="create"
@@ -118,6 +134,9 @@ main() {
     d)
       action="download"
       ip="$OPTARG"
+      ;;
+    s)
+      action="share"
       ;;
     *)
       usage
@@ -140,6 +159,9 @@ main() {
       exit 1
     fi
     download_backup "$ip"
+    ;;
+  share)
+    share_backup
     ;;
   esac
 }
