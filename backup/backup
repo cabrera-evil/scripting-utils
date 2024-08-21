@@ -10,6 +10,7 @@
 #   ./script.sh [-c] [-d IP_ADDRESS]
 #   -c: Create a backup
 #   -d: Download a backup from the specified IP address
+#   -s: Share a backup
 # =============================
 
 # Set global variables
@@ -49,6 +50,7 @@ usage() {
   echo "Usage: $0 [-c] [-d IP_ADDRESS]"
   echo "  -c: Create a backup"
   echo "  -d: Download a backup from the specified IP address"
+  echo "  -s: Share a backup"
   exit 1
 }
 
@@ -104,13 +106,27 @@ download_backup() {
 }
 
 # =============================
+# Function to share the backup
+# =============================
+share_backup() {
+  local ip=$(hostname -I | cut -d' ' -f1)
+  local port="3000"
+  local url="http://${ip}:${port}"
+
+  # Start a simple HTTP server to share the backup
+  echo "Sharing backup at $url..."
+  cd "$BACKUP_DIR"
+  python3 -m http.server "$port"
+}
+
+# =============================
 # Main script logic
 # =============================
 main() {
   local action
 
   # Parse command line options
-  while getopts ":cd:" opt; do
+  while getopts ":csd:" opt; do
     case $opt in
     c)
       action="create"
@@ -118,6 +134,9 @@ main() {
     d)
       action="download"
       ip="$OPTARG"
+      ;;
+    s)
+      action="share"
       ;;
     *)
       usage
@@ -140,6 +159,9 @@ main() {
       exit 1
     fi
     download_backup "$ip"
+    ;;
+  share)
+    share_backup
     ;;
   esac
 }
