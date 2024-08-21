@@ -114,7 +114,7 @@ share_backup() {
   local url="http://${ip}:${PORT}"
 
   # Start a simple HTTP server to share the backup
-  echo "Serving HTTP on $ip port $PORT (url)"
+  echo "Serving HTTP on $ip port $PORT ($url)"
   cd "$BACKUP_DIR"
   python3 -m http.server "$PORT" >/dev/null 2>&1
 }
