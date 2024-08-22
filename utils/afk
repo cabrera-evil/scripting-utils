@@ -4,13 +4,17 @@
 # System Keep Awake Script
 # ==========================================
 # This script keeps the system awake by slightly moving the mouse
-# every 60 seconds. It also checks and installs `xdotool` if not
+# every N seconds. It also checks and installs `xdotool` if not
 # already installed.
 # ==========================================
 
 # ================================
 # Function to check and install xdotool
 # ================================
+
+# Set global variables
+INTERVAL=60
+
 check_and_install_xdotool() {
     if ! command -v xdotool &>/dev/null; then
         echo "xdotool not found. Installing..."
@@ -25,8 +29,6 @@ check_and_install_xdotool() {
             echo "Failed to install xdotool. Exiting..."
             exit 1
         fi
-    else
-        echo "xdotool is already installed."
     fi
 }
 
@@ -34,7 +36,7 @@ check_and_install_xdotool() {
 # Function to keep the system awake
 # ================================
 keep_awake() {
-    echo "Press Ctrl+C to stop the script."
+    echo "Press Ctrl+C to stop keeping the system awake."
 
     while true; do
         # Get the current mouse position
@@ -51,8 +53,8 @@ keep_awake() {
         sleep 1
         xdotool mousemove "$x_orig" "$y_orig"
 
-        # Wait for 60 seconds before repeating
-        sleep 60
+        # Wait for N seconds before repeating
+        sleep $INTERVAL
     done
 }
 

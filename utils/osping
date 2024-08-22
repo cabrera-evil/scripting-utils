@@ -19,7 +19,6 @@ import subprocess
 # Function to retrieve the TTL value from a ping response
 # ================================
 
-
 def get_ttl(ip_address):
     try:
         # Execute the ping command
@@ -48,7 +47,6 @@ def get_ttl(ip_address):
 # Function to determine the operating system based on TTL
 # ================================
 
-
 def get_os(ttl):
     if 0 <= ttl <= 64:
         return "Linux"
@@ -56,7 +54,6 @@ def get_os(ttl):
         return "Windows"
     else:
         return "Unknown"
-
 
 # ================================
 # Main script execution
