@@ -7,7 +7,7 @@
 # or download and restore a backup from a remote server.
 #
 # Usage:
-#   ./script.sh [-c] [-d IP_ADDRESS]
+#   ./backup [-c] [-d IP_ADDRESS]
 #   -c: Create a backup
 #   -d: Download a backup from the specified IP address
 #   -s: Share a backup

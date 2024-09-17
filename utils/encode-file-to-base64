@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# =============================
+# Encode File to Base64 and Copy to Clipboard
+# =============================
+# This script encodes the contents of a specified file into base64
+# and copies the encoded string to the clipboard.
+#
+# Usage:
+#   ./encode-file-to-base64 -f FILE_PATH
+#   -f: Path to the file to encode
+# =============================
+
+# Function to handle errors
+handle_error() {
+    local exit_code=$1
+    local command="${BASH_COMMAND}"
+    if [ $exit_code -ne 0 ]; then
+        echo "Error occurred during: $command"
+        exit 1
+    fi
+}
+
+# Trap errors and run the error handler
+trap 'handle_error $?' ERR
+
+# =============================
+# Function to display usage
+# =============================
+usage() {
+    echo "Usage: $0 -f FILE_PATH"
+    echo "  -f: Path to the file to encode"
+    exit 1
+}
+
+# =============================
+# Function to encode file to base64 and copy to clipboard
+# =============================
+encode_and_copy() {
+    local file_path="$1"
+
+    # Check if the file exists
+    if [[ ! -f "$file_path" ]]; then
+        echo "Error: $file_path does not exist."
+        exit 1
+    fi
+
+    # Encode the file content to base64
+    encoded_content=$(base64 "$file_path")
+
+    # Detect operating system and copy to clipboard
+    if command -v xclip &>/dev/null; then
+        # For Linux systems with xclip
+        echo "$encoded_content" | xclip -selection clipboard
+        echo "Encoded content copied to clipboard using xclip."
+    elif command -v pbcopy &>/dev/null; then
+        # For macOS systems with pbcopy
+        echo "$encoded_content" | pbcopy
+        echo "Encoded content copied to clipboard using pbcopy."
+    else
+        echo "Error: No clipboard utility found. Please install xclip (Linux) or pbcopy (macOS)."
+        exit 1
+    fi
+}
+
+# =============================
+# Main script logic
+# =============================
+main() {
+    local file_path
+
+    # Parse command line options
+    while getopts ":f:" opt; do
+        case $opt in
+        f)
+            file_path="$OPTARG"
+            ;;
+        *)
+            usage
+            ;;
+        esac
+    done
+
+    # Check if the file path is provided
+    if [[ -z "$file_path" ]]; then
+        usage
+    fi
+
+    # Encode the file and copy to clipboard
+    encode_and_copy "$file_path"
+}
+
+# Start the script
+main "$@"
