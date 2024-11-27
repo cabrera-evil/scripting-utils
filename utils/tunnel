@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# =============================
+# Cloudflare Tunnel Management
+# =============================
+# This script is used to install or uninstall a Cloudflare tunnel service.
+#
+# Usage:
+#   ./tunnel.sh [-i] [-u] -t TOKEN
+#   -i: Install and start the Cloudflare tunnel service
+#   -u: Uninstall the Cloudflare tunnel service
+#   -t: Specify the Cloudflare API token
+# =============================
+
+# =============================
+# Function to display usage
+# =============================
+usage() {
+    echo "Usage: $0 [-i] [-u] -t TOKEN"
+    echo "  -i: Install and start the Cloudflare tunnel service"
+    echo "  -u: Uninstall the Cloudflare tunnel service"
+    echo "  -t: Specify the Cloudflare API token"
+    exit 1
+}
+
+# =============================
+# Function to install the tunnel
+# =============================
+install_tunnel() {
+    echo "Installing and starting the Cloudflare tunnel service..."
+    sudo cloudflared service install "$CF_API_TOKEN"
+    if [ $? -eq 0 ]; then
+        echo "Tunnel installed and started successfully."
+    else
+        echo "Failed to install or start the tunnel."
+        exit 1
+    fi
+}
+
+# =============================
+# Function to uninstall the tunnel
+# =============================
+uninstall_tunnel() {
+    echo "Uninstalling the Cloudflare tunnel service..."
+    sudo cloudflared service uninstall "$CF_API_TOKEN"
+    if [ $? -eq 0 ]; then
+        echo "Tunnel uninstalled successfully."
+    else
+        echo "Failed to uninstall the tunnel."
+        exit 1
+    fi
+}
+
+# =============================
+# Main script logic
+# =============================
+main() {
+    local action=""
+    CF_API_TOKEN=""
+
+    # Parse command line options
+    while getopts ":iut:" opt; do
+        case $opt in
+        i)
+            action="install"
+            ;;
+        u)
+            action="uninstall"
+            ;;
+        t)
+            CF_API_TOKEN="$OPTARG"
+            ;;
+        *)
+            usage
+            ;;
+        esac
+    done
+
+    # Validate token
+    if [ -z "$CF_API_TOKEN" ]; then
+        echo "Error: API token is required (-t TOKEN)"
+        usage
+    fi
+
+    # Validate action
+    if [ -z "$action" ]; then
+        echo "Error: You must specify an action (-i or -u)"
+        usage
+    fi
+
+    # Execute the chosen action
+    case $action in
+    install)
+        install_tunnel
+        ;;
+    uninstall)
+        uninstall_tunnel
+        ;;
+    esac
+}
+
+# Start the script
+main "$@"
