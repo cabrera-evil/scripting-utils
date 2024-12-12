@@ -10,7 +10,7 @@ create_symlinks() {
     local dir=$1
     for file in "$dir"/*; do
         if [ -f "$file" ] && [ -x "$file" ]; then
-            sudo ln -sf "$file" "/usr/local/bin/$(basename "$file")"
+            sudo ln -sfv "$file" "/usr/local/bin/$(basename "$file")"
         elif [ -d "$file" ]; then
             create_symlinks "$file"
         fi
