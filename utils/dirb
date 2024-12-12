@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# ==========================================
+# Docker Build Script
+# ==========================================
+# This script builds a Docker image with a tag in the format:
+# USERNAME/REPONAME:GITHASH
+# Optionally pushes the image to the Docker registry if -p flag is provided.
+# ==========================================
+
+# ================================
+# Set global variables
+# ================================
+USERNAME="cabrera-evil"  # Replace with your Docker Hub username
+PUSH=false
+
+# ================================
+# Function to get the current directory name as repository name
+# ================================
+get_repo_name() {
+    local repo_name
+    repo_name=$(basename "$(pwd)")
+
+    if [ -z "$repo_name" ]; then
+        echo "Error: Unable to determine repository name from the current directory."
+        exit 1
+    fi
+
+    echo "$repo_name"
+}
+
+# ================================
+# Function to get the Git hash
+# ================================
+get_git_hash() {
+    local git_hash
+    git_hash=$(git rev-parse --short HEAD 2>/dev/null)
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Unable to retrieve Git hash. Make sure you are in a Git repository."
+        exit 1
+    fi
+
+    echo "$git_hash"
+}
+
+# ================================
+# Function to build the Docker image
+# ================================
+build_docker_image() {
+    local repo_name
+    local git_hash
+
+    repo_name=$(get_repo_name)
+    git_hash=$(get_git_hash)
+
+    docker build . -t "$USERNAME/$repo_name:$git_hash"
+
+    echo "Docker image built and tagged as $USERNAME/$repo_name:$git_hash"
+
+    if [ "$PUSH" = true ]; then
+        docker push "$USERNAME/$repo_name:$git_hash"
+        echo "Docker image pushed to registry as $USERNAME/$repo_name:$git_hash"
+    fi
+}
+
+# ==========================================
+# Main script execution
+# ==========================================
+main() {
+    while getopts "p" opt; do
+        case $opt in
+            p)
+                PUSH=true
+                ;;
+            *)
+                echo "Usage: $0 [-p]"
+                exit 1
+                ;;
+        esac
+    done
+
+    build_docker_image
+}
+
+# Execute the main function
+main "$@"
