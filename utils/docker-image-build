@@ -6,12 +6,13 @@
 # This script builds a Docker image with a tag in the format:
 # USERNAME/REPONAME:GITHASH
 # Optionally pushes the image to the Docker registry if -p flag is provided.
+# Also pushes a "latest" tag for the built image and echoes build details.
 # ==========================================
 
 # ================================
 # Set global variables
 # ================================
-USERNAME="cabrera-evil"  # Replace with your Docker Hub username
+USERNAME="cabreraevil" # Replace with your Docker Hub username
 PUSH=false
 
 # ================================
@@ -54,13 +55,31 @@ build_docker_image() {
     repo_name=$(get_repo_name)
     git_hash=$(get_git_hash)
 
+    echo "Building Docker image: $USERNAME/$repo_name:$git_hash"
     docker build . -t "$USERNAME/$repo_name:$git_hash"
 
     echo "Docker image built and tagged as $USERNAME/$repo_name:$git_hash"
 
     if [ "$PUSH" = true ]; then
+        echo "Checking Docker login status..."
+        if ! docker info >/dev/null 2>&1; then
+            echo "Docker is not logged in. Attempting to log in..."
+            docker login || {
+                echo "Docker login failed. Exiting..."
+                exit 1
+            }
+        fi
+
+        echo "Pushing Docker image: $USERNAME/$repo_name:$git_hash"
         docker push "$USERNAME/$repo_name:$git_hash"
-        echo "Docker image pushed to registry as $USERNAME/$repo_name:$git_hash"
+
+        echo "Tagging image as latest: $USERNAME/$repo_name:latest"
+        docker tag "$USERNAME/$repo_name:$git_hash" "$USERNAME/$repo_name:latest"
+
+        echo "Pushing latest tag: $USERNAME/$repo_name:latest"
+        docker push "$USERNAME/$repo_name:latest"
+
+        echo "Docker image pushed to registry as $USERNAME/$repo_name:$git_hash and $USERNAME/$repo_name:latest"
     fi
 }
 
@@ -70,17 +89,19 @@ build_docker_image() {
 main() {
     while getopts "p" opt; do
         case $opt in
-            p)
-                PUSH=true
-                ;;
-            *)
-                echo "Usage: $0 [-p]"
-                exit 1
-                ;;
+        p)
+            PUSH=true
+            ;;
+        *)
+            echo "Usage: $0 [-p]"
+            exit 1
+            ;;
         esac
     done
 
+    echo "Starting Docker build script at $(date)"
     build_docker_image
+    echo "Docker build script completed at $(date)"
 }
 
 # Execute the main function
