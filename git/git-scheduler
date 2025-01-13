@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 
 # =============================
 # Git Scheduler Script
@@ -16,9 +16,8 @@
 # =============================
 
 # =============================
-# Functions
+# Function to display usage
 # =============================
-
 # Display usage instructions
 usage() {
   echo "Usage: $0 -r REPO_PATH -m 'Commit message' [-t HH:MM] [-d today|tomorrow|YYYY-MM-DD]"
@@ -37,13 +36,15 @@ commit_and_push() {
   }
 
   cd "$repo_path"
-  ga .
-  gcmsg "$commit_msg"
-  gp
+  git add .
+  git commit -m "$commit_msg"
+  git push
   echo "Commit and push completed at $(date '+%Y-%m-%d %H:%M:%S') in repository: $repo_path"
 }
 
-# Schedule commit and push
+# =============================
+# Function to schedule a commit
+# =============================
 schedule_commit() {
   local time="$1" date="$2" repo_path="$3" commit_msg="$4"
 
@@ -86,7 +87,7 @@ schedule_commit() {
 }
 
 # =============================
-# Main Logic
+# Main script logic
 # =============================
 main() {
   local DATE=""
@@ -117,4 +118,5 @@ main() {
   fi
 }
 
+# Start the script
 main "$@"
