@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# ==========================================
+# Vercel Deploy Script
+# ==========================================
+# This script deploys the project to Vercel using the Vercel CLI.
+# ==========================================
+
+# Set global variables
+DIRECTORY="$(pwd)"
+
+# ================================
+# Function to Deploy to Vercel
+# ================================
+deploy_to_vercel() {
+    echo "Starting Vercel deployment..."
+
+    # Pull vercel env variables
+    echo "Pulling Vercel environment variables..."
+    if ! pnpm dlx vercel pull --yes --environment=production; then
+        echo "Failed to pull Vercel environment variables."
+        exit 1
+    fi
+
+    # Build the project
+    echo "Building the project..."
+    if ! pnpm dlx vercel build --prod; then
+        echo "Build failed. Exiting..."
+        exit 1
+    fi
+
+    # Deploy the project
+    echo "Deploying the project to Vercel..."
+    if ! pnpm dlx vercel deploy --prebuilt --prod; then
+        echo "Deployment failed. Exiting..."
+        exit 1
+    fi
+
+    echo "Deployment completed successfully!"
+}
+
+# ==========================================
+# Main script execution
+# ==========================================
+main() {
+    deploy_to_vercel
+}
+
+# Execute the main function
+main
