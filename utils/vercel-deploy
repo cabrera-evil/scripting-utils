@@ -6,9 +6,6 @@
 # This script deploys the project to Vercel using the Vercel CLI.
 # ==========================================
 
-# Set global variables
-DIRECTORY="$(pwd)"
-
 # ================================
 # Function to Deploy to Vercel
 # ================================
