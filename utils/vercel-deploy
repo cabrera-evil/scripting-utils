@@ -1,47 +1,171 @@
 #!/bin/bash
 
 # ==========================================
-# Vercel Deploy Script
+# Vercel Deployment Script with Dynamic Environment
 # ==========================================
-# This script deploys the project to Vercel using the Vercel CLI.
+# This script allows deploying a project to Vercel with flexible options.
+#
+# Usage:
+#   ./vercel-deploy [-b] [-d] [-f] [-e <environment>] [-- <additional Vercel args>]
+#   -b: Build only
+#   -d: Deploy only
+#   -f: Full process (default)
+#   -e <environment>: Set deployment environment (e.g., production, preview, development)
+#   -- <additional Vercel args>: Pass any additional arguments directly to Vercel CLI
 # ==========================================
 
-# ================================
-# Function to Deploy to Vercel
-# ================================
-deploy_to_vercel() {
-    echo "Starting Vercel deployment..."
+# Default environment
+DEPLOY_ENV="production"
 
-    # Pull vercel env variables
-    echo "Pulling Vercel environment variables..."
-    if ! pnpm dlx vercel pull --yes --environment=production; then
+# ================================
+# Function to Handle Errors
+# ================================
+handle_error() {
+    local exit_code=$1
+    local command="${BASH_COMMAND}"
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: Command '$command' failed."
+        exit 1
+    fi
+}
+
+# Trap errors and run the error handler
+trap 'handle_error $?' ERR
+
+# ================================
+# Function to Install Vercel CLI
+# ================================
+install_vercel_cli() {
+    echo "Installing Vercel CLI..."
+
+    if command -v vercel &>/dev/null; then
+        echo "Vercel CLI is already installed. Skipping installation..."
+        return
+    fi
+
+    if ! pnpm add vercel --global; then
+        echo "Failed to install Vercel CLI."
+        exit 1
+    fi
+
+    echo "Vercel CLI installed successfully!"
+}
+
+# ================================
+# Function to Pull Vercel Environment Variables
+# ================================
+pull_vercel_env() {
+    echo "Pulling Vercel environment variables for $DEPLOY_ENV..."
+    if ! vercel pull --yes --environment=$DEPLOY_ENV; then
         echo "Failed to pull Vercel environment variables."
         exit 1
     fi
+}
 
-    # Build the project
-    echo "Building the project..."
-    if ! pnpm dlx vercel build --prod; then
+# ================================
+# Function to Build Project
+# ================================
+build_project() {
+    local build_flag="$DEPLOY_ENV"
+    if [ "$DEPLOY_ENV" = "production" ]; then
+        build_flag="prod"
+    fi
+    echo "Building the project for $DEPLOY_ENV..."
+    if ! vercel build --$build_flag; then
         echo "Build failed. Exiting..."
         exit 1
     fi
+    echo "Build completed successfully!"
+}
 
-    # Deploy the project
-    echo "Deploying the project to Vercel..."
-    if ! pnpm dlx vercel deploy --prebuilt --prod; then
+# ================================
+# Function to Deploy Project
+# ================================
+deploy_project() {
+    local deploy_flag="$DEPLOY_ENV"
+    if [ "$DEPLOY_ENV" = "production" ]; then
+        deploy_flag="prod"
+    fi
+    echo "Deploying the project to Vercel ($DEPLOY_ENV)..."
+    shift # Remove the first argument (which is just "deploy" or "full")
+    vercel deploy --$deploy_flag "$@"
+    if [ $? -ne 0 ]; then
         echo "Deployment failed. Exiting..."
         exit 1
     fi
-
     echo "Deployment completed successfully!"
 }
 
-# ==========================================
-# Main script execution
-# ==========================================
-main() {
-    deploy_to_vercel
+# ================================
+# Function to Display Usage
+# ================================
+usage() {
+    echo "Usage: $0 [-b] [-d] [-f] [-e <environment>] [-- <additional Vercel args>]"
+    echo "  -b: Build only"
+    echo "  -d: Deploy only"
+    echo "  -f: Full process (default)"
+    echo "  -e <environment>: Set deployment environment (e.g., production, preview, development)"
+    echo "  -- <additional Vercel args>: Pass any additional arguments directly to Vercel CLI"
+    exit 1
 }
 
-# Execute the main function
-main
+# ================================
+# Main Script Logic
+# ================================
+main() {
+    local action="full"
+    local additional_args=()
+
+    # Parse command-line options
+    while [[ "$1" =~ ^- ]]; do
+        case "$1" in
+        -b)
+            action="build"
+            shift
+            ;;
+        -d)
+            action="deploy"
+            shift
+            ;;
+        -f)
+            action="full"
+            shift
+            ;;
+        -e)
+            shift
+            DEPLOY_ENV="$1"
+            shift
+            ;;
+        --)
+            shift
+            additional_args=("$@")
+            break
+            ;;
+        *)
+            usage
+            ;;
+        esac
+    done
+
+    # Install Vercel CLI
+    install_vercel_cli
+
+    # Execute actions based on the chosen option
+    case $action in
+    build)
+        pull_vercel_env
+        build_project
+        ;;
+    deploy)
+        deploy_project "${additional_args[@]}"
+        ;;
+    full)
+        pull_vercel_env
+        build_project
+        deploy_project "${additional_args[@]}"
+        ;;
+    esac
+}
+
+# Start the script
+main "$@"
