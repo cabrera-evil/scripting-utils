@@ -1,0 +1,136 @@
+#!/bin/bash
+
+# =============================
+# Docker Image Builder & Deployer
+# =============================
+# This script builds a Docker image using the format:
+# USERNAME/REPONAME:GITHASH
+# It allows specifying a custom username, repository name,
+# Dockerfile path, build arguments, and optional image pushing.
+#
+# Usage:
+#   ./dockerfile-tools [-u username] [-r repo_name] [-a build_args] [-f dockerfile] [-p] [-l] [-h]
+#
+#   -u: Set Docker Hub username
+#   -r: Set repository name (default: current directory name)
+#   -a: Set Docker build arguments
+#   -f: Specify Dockerfile path
+#   -p: Push image to Docker registry
+#   -l: Tag image as latest
+#   -h: Show usage information
+# =============================
+
+# ================================
+# Global Variables
+# ================================
+USERNAME="cabreraevil" # Default Docker Hub username
+REPO_NAME="" # Default to current directory name if not provided
+PUSH=false
+LATEST=false
+BUILD_ARGS=""
+DOCKERFILE="Dockerfile" # Default Dockerfile path
+
+# ================================
+# Function to get the repository name
+# ================================
+get_repo_name() {
+    if [ -n "$REPO_NAME" ]; then
+        echo "$REPO_NAME"
+    else
+        echo "$(basename "$(pwd)")"
+    fi
+}
+
+# ================================
+# Function to get the Git hash
+# ================================
+get_git_hash() {
+    git rev-parse --short HEAD 2>/dev/null || {
+        echo "Error: Unable to retrieve Git hash. Ensure you're in a Git repository." >&2
+        exit 1
+    }
+}
+
+# ================================
+# Function to check Docker login
+# ================================
+check_docker_login() {
+    if ! docker info >/dev/null 2>&1; then
+        echo "Docker is not logged in. Attempting to log in..."
+        docker login || {
+            echo "Docker login failed. Exiting..." >&2
+            exit 1
+        }
+    fi
+}
+
+# ================================
+# Function to display usage information
+# ================================
+show_usage() {
+    echo "Usage: $0 [-u username] [-r repo_name] [-a build_args] [-f dockerfile] [-p] [-l] [-h]"
+    echo "  -u  Set Docker Hub username"
+    echo "  -r  Set repository name (default: current directory name)"
+    echo "  -a  Set Docker build arguments"
+    echo "  -f  Specify Dockerfile path"
+    echo "  -p  Push image to Docker registry"
+    echo "  -l  Tag image as latest"
+    echo "  -h  Show this help message"
+    exit 0
+}
+
+# ================================
+# Function to build the Docker image
+# ================================
+build_docker_image() {
+    local repo_name=$(get_repo_name)
+    local git_hash=$(get_git_hash)
+    local image_tag="$USERNAME/$repo_name:$git_hash"
+
+    echo "Building Docker image: $image_tag"
+    docker build $BUILD_ARGS -f "$DOCKERFILE" -t "$image_tag" . || {
+        echo "Error: Docker build failed." >&2
+        exit 1
+    }
+
+    echo "Docker image built and tagged as $image_tag"
+
+    if [ "$PUSH" = true ]; then
+        check_docker_login
+        echo "Pushing Docker image: $image_tag"
+        docker push "$image_tag"
+    fi
+
+    if [ "$LATEST" = true ]; then
+        local latest_tag="$USERNAME/$repo_name:latest"
+        echo "Tagging image as latest: $latest_tag"
+        docker tag "$image_tag" "$latest_tag"
+        echo "Pushing latest tag: $latest_tag"
+        docker push "$latest_tag"
+    fi
+}
+
+# ==========================================
+# Main script execution
+# ==========================================
+main() {
+    while getopts "u:r:a:f:plh" opt; do
+        case $opt in
+        u) USERNAME="$OPTARG" ;;
+        r) REPO_NAME="$OPTARG" ;;
+        a) BUILD_ARGS="$OPTARG" ;;
+        f) DOCKERFILE="$OPTARG" ;;
+        p) PUSH=true ;;
+        l) LATEST=true ;;
+        h) show_usage ;;
+        *) show_usage ;;
+        esac
+    done
+
+    echo "Starting Docker build script at $(date)"
+    build_docker_image
+    echo "Docker build script completed at $(date)"
+}
+
+# Execute the main function
+main "$@"
