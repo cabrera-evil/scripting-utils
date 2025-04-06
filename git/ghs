@@ -5,7 +5,8 @@ set -euo pipefail
 # -------------------------
 # Defaults
 # -------------------------
-DEFAULT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')"
+DEFAULT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null ||
+    git config --get remote.origin.url | sed -E 's/.*[:\/](.+\/.+)\.git/\1/')"
 DEFAULT_ENV=""
 DEFAULT_FILE=".secrets.env"
 
@@ -20,6 +21,7 @@ Commands:
   apply           Set secrets from file or inline
   delete          Delete secrets parsed from file or inline
   list            List secrets in the repo or environment
+  purge           Delete ALL secrets from the repo or environment (danger!)
   help            Show this help message
 
 Options:
@@ -27,12 +29,13 @@ Options:
   -e, --env        Environment name (for environment-level secrets)
   -f, --file       File with secrets in KEY=VALUE format (default: $DEFAULT_FILE)
   -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
+  --yes            Skip confirmation prompt for purge
 
 Examples:
   $0 apply --file .env.production
-  $0 delete --file .env.production
-  $0 apply --inline GH_TOKEN=abc,NPM_TOKEN=xyz
   $0 delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
+  $0 purge --env production --yes
+  $0 list
 EOF
 }
 
@@ -55,7 +58,8 @@ function parse_args() {
             INLINE="$2"
             shift
             ;;
-        apply | delete | list | help) COMMAND="$1" ;;
+        --yes) CONFIRM_YES=true ;;
+        apply | delete | list | purge | help) COMMAND="$1" ;;
         *)
             echo "❌ Unknown option: $1"
             usage
@@ -146,6 +150,31 @@ function list_secrets() {
     fi
 }
 
+function purge_secrets() {
+    local scope=("--repo" "$REPO")
+    [[ -n "$ENV" ]] && scope+=(--env "$ENV")
+
+    echo "⚠️  This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
+    if [[ "${CONFIRM_YES:-}" != "true" ]]; then
+        read -r -p "Are you sure? (y/N): " confirm
+        [[ "$confirm" != "y" && "$confirm" != "Y" ]] && {
+            echo "❌ Aborted"
+            exit 1
+        }
+    fi
+
+    mapfile -t secrets < <(gh secret list "${scope[@]}" --json name -q '.[].name')
+    if [[ ${#secrets[@]} -eq 0 ]]; then
+        echo "ℹ️ No secrets to delete."
+        return
+    fi
+
+    for key in "${secrets[@]}"; do
+        echo "🗑️ Deleting secret: $key"
+        gh secret delete "$key" "${scope[@]}" || true
+    done
+}
+
 # -------------------------
 # Main
 # -------------------------
@@ -167,6 +196,10 @@ delete)
     ;;
 list)
     list_secrets
+    ;;
+purge)
+    log_summary
+    purge_secrets
     ;;
 help | *)
     usage
