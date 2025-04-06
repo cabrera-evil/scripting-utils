@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# -------------------------
+# Defaults
+# -------------------------
+DEFAULT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')"
+DEFAULT_ENV=""
+DEFAULT_FILE=".secrets.env"
+
+# -------------------------
+# Helper Functions
+# -------------------------
+function usage() {
+    cat <<EOF
+Usage: $(basename "$0") [command] [options]
+
+Commands:
+  apply           Set secrets from file or inline
+  delete          Delete secrets parsed from file or inline
+  list            List secrets in the repo or environment
+  help            Show this help message
+
+Options:
+  -r, --repo       GitHub repo (owner/repo). Default: $DEFAULT_REPO
+  -e, --env        Environment name (for environment-level secrets)
+  -f, --file       File with secrets in KEY=VALUE format (default: $DEFAULT_FILE)
+  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
+
+Examples:
+  $0 apply --file .env.production
+  $0 delete --file .env.production
+  $0 apply --inline GH_TOKEN=abc,NPM_TOKEN=xyz
+  $0 delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
+EOF
+}
+
+function parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -r | --repo)
+            REPO="$2"
+            shift
+            ;;
+        -e | --env)
+            ENV="$2"
+            shift
+            ;;
+        -f | --file)
+            FILE="$2"
+            shift
+            ;;
+        -i | --inline)
+            INLINE="$2"
+            shift
+            ;;
+        apply | delete | list | help) COMMAND="$1" ;;
+        *)
+            echo "❌ Unknown option: $1"
+            usage
+            exit 1
+            ;;
+        esac
+        shift
+    done
+
+    REPO="${REPO:-$DEFAULT_REPO}"
+    ENV="${ENV:-$DEFAULT_ENV}"
+    FILE="${FILE:-$DEFAULT_FILE}"
+}
+
+function log_summary() {
+    echo -e "\n🔐 GitHub Secrets CLI"
+    echo "──────────────────────────────"
+    echo "📦 Repo:        $REPO"
+    [[ -n "$ENV" ]] && echo "🏷️  Environment: $ENV"
+    [[ -n "${FILE:-}" && -f "$FILE" ]] && echo "📄 File:        $FILE"
+    [[ -n "${INLINE:-}" ]] && echo "✍️  Inline:      $INLINE"
+    echo "──────────────────────────────"
+}
+
+# -------------------------
+# Secret Source Parser
+# -------------------------
+declare -A SECRETS
+
+function load_secrets() {
+    if [[ -n "${FILE:-}" && -f "$FILE" ]]; then
+        while IFS='=' read -r key value; do
+            [[ -z "$key" || "$key" == \#* ]] && continue
+            SECRETS["$key"]="$value"
+        done < <(grep -v '^#' "$FILE")
+    fi
+
+    if [[ -n "${INLINE:-}" ]]; then
+        IFS=',' read -ra PAIRS <<<"$INLINE"
+        for pair in "${PAIRS[@]}"; do
+            key="${pair%%=*}"
+            value="${pair#*=}"
+            SECRETS["$key"]="$value"
+        done
+    fi
+
+    if [[ "${#SECRETS[@]}" -eq 0 ]]; then
+        echo "⚠️  No secrets found from file or inline input."
+        exit 1
+    fi
+}
+
+# -------------------------
+# Commands
+# -------------------------
+function apply_secrets() {
+    for key in "${!SECRETS[@]}"; do
+        local value="${SECRETS[$key]}"
+        if [[ -n "$ENV" ]]; then
+            echo "🔐 Setting env secret: $key"
+            gh secret set "$key" --env "$ENV" --body "$value" --repo "$REPO"
+        else
+            echo "🔐 Setting repo secret: $key"
+            gh secret set "$key" --body "$value" --repo "$REPO"
+        fi
+    done
+}
+
+function delete_secrets() {
+    for key in "${!SECRETS[@]}"; do
+        if [[ -n "$ENV" ]]; then
+            echo "🗑️ Deleting env secret: $key"
+            gh secret delete "$key" --env "$ENV" --repo "$REPO" || true
+        else
+            echo "🗑️ Deleting repo secret: $key"
+            gh secret delete "$key" --repo "$REPO" || true
+        fi
+    done
+}
+
+function list_secrets() {
+    if [[ -n "$ENV" ]]; then
+        echo "📋 Environment secrets for '$ENV':"
+        gh secret list --env "$ENV" --repo "$REPO"
+    else
+        echo "📋 Repository secrets:"
+        gh secret list --repo "$REPO"
+    fi
+}
+
+# -------------------------
+# Main
+# -------------------------
+COMMAND="${1:-help}"
+shift || true
+
+parse_args "$@"
+
+case "$COMMAND" in
+apply)
+    log_summary
+    load_secrets
+    apply_secrets
+    ;;
+delete)
+    log_summary
+    load_secrets
+    delete_secrets
+    ;;
+list)
+    list_secrets
+    ;;
+help | *)
+    usage
+    ;;
+esac
