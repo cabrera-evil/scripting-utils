@@ -27,15 +27,18 @@ Commands:
   help          Show this help message
 
 Options:
-  -n, --namespace    Kubernetes namespace (default: $DEFAULT_NAMESPACE)
-  -r, --release      Helm release name (default: $DEFAULT_RELEASE_NAME)
-  -d, --dir          Helm chart directory (default: current directory)
-  -f, --values       Custom values file path (relative to --dir or absolute)
-  -s, --stage        Deployment stage (looks for values.<stage>.yaml in --dir)
+  -n, --namespace     Kubernetes namespace (default: $DEFAULT_NAMESPACE)
+  -r, --release       Helm release name (default: $DEFAULT_RELEASE_NAME)
+  -d, --dir           Helm chart directory (default: current directory)
+  -f, --values        Custom values file path (relative to --dir or absolute)
+  -s, --stage         Deployment stage (uses values.<stage>.yaml in --dir)
+  -p, --repo          Remote Helm repo URL (optional)
+  -m, --repo-name     Helm repo alias (default: "remote")
+  -c, --chart         Chart name in remote repo (required with --repo)
 
 Examples:
   $0 install --stage dev
-  $0 upgrade --values values.production.yaml
+  $0 upgrade --repo https://charts.example.com/ --repo-name myrepo --chart mychart
   $0 logs -r deploy-chart
 EOF
 }
@@ -63,6 +66,18 @@ function parse_args() {
             STAGE="$2"
             shift
             ;;
+        -p | --repo)
+            HELM_REPO="$2"
+            shift
+            ;;
+        -m | --repo-name)
+            HELM_REPO_NAME="$2"
+            shift
+            ;;
+        -c | --chart)
+            CHART_NAME="$2"
+            shift
+            ;;
         install | upgrade | uninstall | logs | describe | status | help)
             COMMAND="$1"
             ;;
@@ -75,35 +90,46 @@ function parse_args() {
         shift
     done
 
-    # Defaults
     RELEASE_NAME="${RELEASE_NAME:-$DEFAULT_RELEASE_NAME}"
     HELM_DIR="${HELM_DIR:-$DEFAULT_HELM_DIR}"
+    HELM_REPO_NAME="${HELM_REPO_NAME:-remote}"
 
-    # Construct the full namespace and values file path
     if [[ -n "${STAGE:-}" ]]; then
         NAMESPACE="${NAMESPACE:-$DEFAULT_NAMESPACE}-${STAGE}"
         VALUES_FILE="${HELM_DIR}/values.${STAGE}.yaml"
     else
-        NAMESPACE="$NAMESPACE:-$DEFAULT_NAMESPACE"
+        NAMESPACE="${NAMESPACE:-$DEFAULT_NAMESPACE}"
         VALUES_FILE="${VALUES_FILE:-${HELM_DIR}/${DEFAULT_VALUES_FILE}}"
     fi
 
-    # Optional: print debug info
     echo -e "\n📦 Deployment Summary"
     echo -e "────────────────────────────────────────"
     printf "📛 Namespace:   %s\n" "$NAMESPACE"
     printf "🚀 Release:     %s\n" "$RELEASE_NAME"
+    [[ -n "${HELM_REPO:-}" ]] && printf "🌐 Chart Repo:  %s\n" "$HELM_REPO"
+    [[ -n "${HELM_REPO_NAME:-}" ]] && printf "📚 Repo Alias:  %s\n" "$HELM_REPO_NAME"
+    [[ -n "${CHART_NAME:-}" ]] && printf "📦 Chart Name:  %s\n" "$CHART_NAME"
     printf "📂 Chart Dir:   %s\n" "$HELM_DIR"
     printf "📄 Values File: %s\n" "$VALUES_FILE"
     printf "🔧 Stage:       %s\n" "${STAGE:-<none>}"
     echo -e "────────────────────────────────────────\n"
 }
 
+function get_chart_source() {
+    if [[ -n "${HELM_REPO:-}" && -n "${CHART_NAME:-}" ]]; then
+        helm repo add "$HELM_REPO_NAME" "$HELM_REPO" >/dev/null
+        helm repo update >/dev/null
+        echo "$HELM_REPO_NAME/$CHART_NAME"
+    else
+        echo "$HELM_DIR"
+    fi
+}
+
 # -------------------------
 # Command Implementations
 # -------------------------
 function helm_install() {
-    helm install "$RELEASE_NAME" "$HELM_DIR" \
+    helm install "$RELEASE_NAME" "$(get_chart_source)" \
         --namespace "$NAMESPACE" \
         --create-namespace \
         -f "$VALUES_FILE" \
@@ -111,7 +137,7 @@ function helm_install() {
 }
 
 function helm_upgrade() {
-    helm upgrade --install "$RELEASE_NAME" "$HELM_DIR" \
+    helm upgrade --install "$RELEASE_NAME" "$(get_chart_source)" \
         --namespace "$NAMESPACE" \
         --create-namespace \
         -f "$VALUES_FILE" \
