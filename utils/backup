@@ -1,22 +1,21 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
 
 # =============================
-# Backup Management Script
+# Defaults
 # =============================
-# This script can either create a backup of important directories
-# or download and restore a backup from a remote server.
-#
-# Usage:
-#   ./backup [-c] [-d IP_ADDRESS]
-#   -c: Create a backup
-#   -d: Download a backup from the specified IP address
-#   -s: Share a backup
-# =============================
-
-# Set global variables
 BACKUP_DIR="$HOME/Documents/Backups"
-BACKUP_FILE="bk-$(date +%Y-%m-%d).zip"
 DESTINATION="$HOME"
+TMP_DIR="/tmp"
+PORT=8000
+NOTIFY=true
+VERBOSE=false
+COMPRESSION_LEVEL="-0"
+OUTPUT_NAME=""
+ZIP_NAME=""
+DUNST_ID=91190
+
 DIRS_TO_BACKUP=(
   "$HOME/.ssh"
   "$HOME/git"
@@ -26,146 +25,254 @@ DIRS_TO_BACKUP=(
   "$HOME/Documents"
   "$HOME/Pictures"
 )
-EXCLUDE_PATTERN="*/node_modules/* *.zip"
-PORT=8000
-TMP_DIR="/tmp"
+
+EXCLUDE_PATTERN=(
+  "*/node_modules/*"
+  "*/dist/*"
+  "*/build/*"
+  "*/.next/*"
+  "*/.pnpm/*"
+  "*.zip"
+  "*.tar.gz"
+  "*.log"
+  "*.tmp"
+)
 
 # =============================
-# Function to handle errors
+# Helpers
 # =============================
+notify() {
+  $NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
+}
+
+notify_progress() {
+  local percent="$1"
+  local message="$2"
+  $NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
+}
+
 handle_error() {
   local exit_code=$1
   local command="${BASH_COMMAND}"
   if [ $exit_code -ne 0 ]; then
-    dunstify "Backup" "Backup failed during: $command" -t 2000 -u critical
+    notify "❌ Failed during: $command"
     exit 1
   fi
 }
-
-# Trap errors and run the error handler
 trap 'handle_error $?' ERR
 
-# =============================
-# Function to display usage
-# =============================
 usage() {
-  echo "Usage: $0 [-c] [-d IP_ADDRESS]"
-  echo "  -c: Create a backup"
-  echo "  -d: Download a backup from the specified IP address"
-  echo "  -s: Share a backup"
+  cat <<EOF
+Usage: $0 <command> [options]
+
+Commands:
+  create              Create a backup
+  share               Share latest backup via HTTP
+  download <IP>       Download and restore from remote backup server
+  restore <FILE>      Restore from local .zip backup
+  list                List local backup files
+
+Options:
+  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
+  --dest <DIR>        Restore destination directory (default: $DESTINATION)
+  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
+  --port <PORT>       HTTP port to share/download (default: $PORT)
+  --output <NAME>     Override output backup file name
+  --zip-name <NAME>   Expected zip file to download (default: auto)
+  --dirs <D1,D2>      Comma-separated directories to back up
+  --exclude <PATTS>   Comma-separated exclude patterns
+  --compress <0|9>    Zip compression level (default: 0)
+  --no-notify         Disable dunstify popups
+  --verbose           Show zip/rsync output live
+  -h, --help          Show this help
+EOF
   exit 1
 }
 
 # =============================
-# Function to create a backup
+# Core Actions
 # =============================
 create_backup() {
-  # Check if backup directory exists
-  if [ ! -d "$BACKUP_DIR" ]; then
-    mkdir -p "$BACKUP_DIR"
-  fi
+  mkdir -p "$BACKUP_DIR"
+  local filename="${OUTPUT_NAME:-bk-$(date +%Y-%m-%d).zip}"
+  local path="$BACKUP_DIR/$filename"
 
-  # Validate directories before proceeding
+  echo "📦 Creating: $path"
+  notify "Creating backup..."
+
+  # Collect file list
+  local tmp_list
+  tmp_list=$(mktemp)
   for dir in "${DIRS_TO_BACKUP[@]}"; do
-    if [ ! -d "$dir" ]; then
-      echo "Directory '$dir' not found."
-      exit 1
-    fi
+    [[ -d "$dir" ]] && find "$dir" -type f >>"$tmp_list"
   done
 
-  # Compress the directories, excluding specified patterns
-  dunstify "Backup" "Creating backup..." -t 2000
-  zip -q -r "$BACKUP_DIR/$BACKUP_FILE" "${DIRS_TO_BACKUP[@]}" -x $EXCLUDE_PATTERN
+  # Build args
+  local zip_args=(-r "$COMPRESSION_LEVEL" "$path" -@)
+  for pattern in "${EXCLUDE_PATTERN[@]}"; do
+    zip_args+=(-x "$pattern")
+  done
 
-  dunstify "Backup" "Backup created successfully at $BACKUP_DIR/$BACKUP_FILE" -t 2000
-  echo "Backup created at $BACKUP_DIR/$BACKUP_FILE"
-}
+  if $VERBOSE; then
+    zip -v "${zip_args[@]}" <"$tmp_list"
+  else
+    (
+      zip "${zip_args[@]}" <"$tmp_list" >/dev/null 2>&1
+      rm -f "$tmp_list"
+    ) &
+    local zip_pid=$!
 
-# =============================
-# Function to download and restore a backup
-# =============================
-download_backup() {
-  local ip="$1"
-  local url="http://${ip}:${PORT}"
-  local filename="${TMP_DIR}/$(basename "$BACKUP_FILE")"
+    local percent=0 step=3
+    while kill -0 "$zip_pid" 2>/dev/null; do
+      sleep 1
+      percent=$((percent + step))
+      [[ $percent -gt 99 ]] && percent=99
+      notify_progress "$percent" "Creating backup: $filename ($percent%)"
+    done
 
-  # Download the backup file
-  echo "Downloading HTTP from $ip port $PORT ($url)..."
-  wget -O "$filename" "$url/$(basename "$filename")"
-
-  # Verify download success
-  if [[ ! -f "$filename" ]]; then
-    echo "Download failed or file not found."
-    exit 1
+    wait "$zip_pid"
   fi
 
-  # Decompress and synchronize files
-  echo "Decompressing and synchronizing files..."
-  unzip "$filename" -d "$TMP_DIR"
-  rsync -av --progress --remove-source-files --ignore-existing "${TMP_DIR}/home/$USER/" "$DESTINATION/"
-
-  echo "Files synchronized successfully."
+  rm -f "$tmp_list"
+  notify_progress 100 "✅ Backup complete: $filename"
+  notify "✅ Backup complete: $filename"
+  echo "✅ Backup ready: $path"
 }
 
-# =============================
-# Function to share the backup
-# =============================
 share_backup() {
-  local ip=$(hostname -I | cut -d' ' -f1)
-  local url="http://${ip}:${PORT}"
-
-  # Start a simple HTTP server to share the backup
-  echo "Serving HTTP on $ip port $PORT ($url)"
+  local ip=$(hostname -I | awk '{print $1}')
+  echo "🌍 Serving: http://$ip:$PORT"
   cd "$BACKUP_DIR"
   python3 -m http.server "$PORT" >/dev/null 2>&1
 }
 
-# =============================
-# Main script logic
-# =============================
-main() {
-  local action
+restore_backup() {
+  local file="$1"
+  [[ ! -f "$file" ]] && {
+    echo "❌ File not found: $file"
+    exit 1
+  }
 
-  # Parse command line options
-  while getopts ":csd:" opt; do
-    case $opt in
-    c)
-      action="create"
-      ;;
-    d)
-      action="download"
-      ip="$OPTARG"
-      ;;
-    s)
-      action="share"
-      ;;
-    *)
-      usage
-      ;;
-    esac
+  notify "Restoring from $file"
+  unzip "$file" -d "$TMP_DIR"
+
+  local source="${TMP_DIR}/home/$USER"
+  local total=$(find "$source" -type f 2>/dev/null | wc -l)
+  [[ "$total" -eq 0 ]] && total=100
+  local count=0
+  local prev_percent=0
+
+  notify_progress 0 "Restoring from $file (0%)"
+
+  rsync -av --info=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
+    if [[ "$line" =~ to-check ]]; then
+      ((count++))
+      local percent=$((100 * count / total))
+      [[ $percent -gt 100 ]] && percent=100
+      if [[ $percent -ne $prev_percent ]]; then
+        prev_percent=$percent
+        notify_progress "$percent" "Restoring from $file ($percent%)"
+      fi
+    fi
   done
 
-  if [ -z "$action" ]; then
-    usage
-  fi
+  notify_progress 100 "✅ Restore complete"
+  notify "✅ Restore complete: $file"
+  echo "✅ Restore complete: $file"
+}
 
-  # Execute the chosen action
-  case $action in
-  create)
-    create_backup
-    ;;
+download_backup() {
+  local ip="$1"
+  local zip="${ZIP_NAME:-bk-$(date +%Y-%m-%d).zip}"
+  local url="http://$ip:$PORT/$zip"
+  local out_path="$TMP_DIR/$zip"
+
+  echo "⬇️ Downloading from: $url"
+  wget -q -O "$out_path" "$url" || {
+    echo "❌ Download failed"
+    exit 1
+  }
+
+  restore_backup "$out_path"
+}
+
+list_backups() {
+  echo "📂 Backups in $BACKUP_DIR:"
+  ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || echo "No backups found."
+}
+
+# =============================
+# Main CLI
+# =============================
+main() {
+  local command="${1:-}"
+  shift || true
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --dir)
+      shift
+      BACKUP_DIR="$1"
+      ;;
+    --dest)
+      shift
+      DESTINATION="$1"
+      ;;
+    --tmp)
+      shift
+      TMP_DIR="$1"
+      ;;
+    --port)
+      shift
+      PORT="$1"
+      ;;
+    --output)
+      shift
+      OUTPUT_NAME="$1"
+      ;;
+    --zip-name)
+      shift
+      ZIP_NAME="$1"
+      ;;
+    --dirs)
+      shift
+      IFS=',' read -ra DIRS_TO_BACKUP <<<"$1"
+      ;;
+    --exclude)
+      shift
+      IFS=',' read -ra EXCLUDE_PATTERN <<<"$1"
+      ;;
+    --compress)
+      shift
+      COMPRESSION_LEVEL="-$1"
+      ;;
+    --no-notify) NOTIFY=false ;;
+    --verbose) VERBOSE=true ;;
+    -h | --help) usage ;;
+    *) [[ -z "${POSITIONAL:-}" ]] && POSITIONAL="$1" || POSITIONAL_2="$1" ;;
+    esac
+    shift
+  done
+
+  [[ -z "$command" ]] && usage
+
+  case "$command" in
+  create) create_backup ;;
+  share) share_backup ;;
   download)
-    if [ -z "$ip" ]; then
-      echo "IP address is required for downloading a backup."
-      exit 1
-    fi
-    download_backup "$ip"
+    [[ -z "${POSITIONAL:-}" ]] && echo "❌ Missing IP" && usage
+    download_backup "$POSITIONAL"
     ;;
-  share)
-    share_backup
+  restore)
+    [[ -z "${POSITIONAL:-}" ]] && echo "❌ Missing file name" && usage
+    restore_backup "$POSITIONAL"
+    ;;
+  list) list_backups ;;
+  *)
+    echo "❌ Unknown command: $command"
+    usage
     ;;
   esac
 }
 
-# Start the script
 main "$@"
