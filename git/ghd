@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# =============================
+# Defaults
+# =============================
+REPO=""
+REF="main"
+ENVIRONMENT="production"
+DESCRIPTION=""
+URL=""
+IS_PRODUCTION=true
+IS_TRANSIENT=false
+SLEEP_SECONDS=10
+
+# =============================
+# Helpers
+# =============================
+usage() {
+  cat <<EOF
+Usage: $0 deploy [options]
+
+Commands:
+  deploy                Create a GitHub deployment and mark it as successful
+
+Options:
+  --repo <REPO>         GitHub repo (e.g. user/repo)
+  --ref <SHA|BRANCH>    Git ref to deploy (default: main)
+  --env <NAME>          Deployment environment (default: production)
+  --desc <TEXT>         Deployment description
+  --url <URL>           Public environment URL
+  --prod                Mark as production environment (default: true)
+  --transient           Mark as transient environment (default: false)
+  --sleep <SECONDS>     Simulate deployment time (default: 10)
+  -h, --help            Show this help
+EOF
+  exit 1
+}
+
+# =============================
+# Deployment Logic
+# =============================
+deploy() {
+  [[ -z "$REPO" ]] && echo "❌ Missing --repo" && usage
+  [[ -z "$URL" ]] && echo "❌ Missing --url" && usage
+
+  DESCRIPTION="${DESCRIPTION:-Deployment to $URL}"
+
+  DEPLOYMENT_ID=$(gh api repos/$REPO/deployments -X POST \
+    -F ref="$REF" \
+    -F environment="$ENVIRONMENT" \
+    -F description="$DESCRIPTION" \
+    -F auto_merge=false \
+    -F transient_environment=$IS_TRANSIENT \
+    -F production_environment=$IS_PRODUCTION \
+    --jq '.id')
+
+  echo "✅ Deployment ID: $DEPLOYMENT_ID"
+
+  gh api repos/$REPO/deployments/$DEPLOYMENT_ID/statuses -X POST \
+    -f state="in_progress"
+  echo "🚀 Deployment in progress..."
+
+  sleep "$SLEEP_SECONDS"
+
+  gh api repos/$REPO/deployments/$DEPLOYMENT_ID/statuses -X POST \
+    -f state="success" \
+    -f environment_url="$URL"
+
+  echo "🎉 Deployment marked as success with URL: $URL"
+}
+
+# =============================
+# Main CLI
+# =============================
+main() {
+  local command="${1:-}"
+  shift || true
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --repo)
+      shift
+      REPO="$1"
+      ;;
+    --ref)
+      shift
+      REF="$1"
+      ;;
+    --env)
+      shift
+      ENVIRONMENT="$1"
+      ;;
+    --desc)
+      shift
+      DESCRIPTION="$1"
+      ;;
+    --url)
+      shift
+      URL="$1"
+      ;;
+    --prod) IS_PRODUCTION=true ;;
+    --transient) IS_TRANSIENT=true ;;
+    --sleep)
+      shift
+      SLEEP_SECONDS="$1"
+      ;;
+    -h | --help) usage ;;
+    *) echo "❌ Unknown option: $1" && usage ;;
+    esac
+    shift
+  done
+
+  [[ -z "$command" ]] && usage
+
+  case "$command" in
+  deploy) deploy ;;
+  *) echo "❌ Unknown command: $command" && usage ;;
+  esac
+}
+
+main "$@"

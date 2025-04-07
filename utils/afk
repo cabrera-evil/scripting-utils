@@ -1,70 +1,76 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # ==========================================
 # System Keep Awake Script
 # ==========================================
-# This script keeps the system awake by slightly moving the mouse
-# every N seconds. It also checks and installs `xdotool` if not
-# already installed.
+# Keeps the system awake by moving the mouse slightly every N seconds.
+# Optionally installs `xdotool` if missing.
+#
+# Usage:
+#   ./keep-awake.sh [--interval N] [--no-install]
 # ==========================================
 
-# ================================
-# Function to check and install xdotool
-# ================================
+DEFAULT_INTERVAL=60
+INTERVAL=$DEFAULT_INTERVAL
+INSTALL=true
 
-# Set global variables
-INTERVAL=60
+usage() {
+    echo "Usage: $0 [--interval SECONDS] [--no-install]"
+    echo "  --interval N     Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)"
+    echo "  --no-install     Skip xdotool auto-install check"
+    exit 1
+}
 
-check_and_install_xdotool() {
+check_xdotool() {
     if ! command -v xdotool &>/dev/null; then
-        echo "xdotool not found. Installing..."
-
-        # Update package list and install xdotool
-        sudo apt-get update -y
-        sudo apt-get install -y xdotool
-
-        if command -v xdotool &>/dev/null; then
-            echo "xdotool installed successfully."
-        else
-            echo "Failed to install xdotool. Exiting..."
+        if [[ "$INSTALL" == false ]]; then
+            echo "❌ xdotool not found and --no-install was used."
             exit 1
         fi
+        echo "🔧 Installing xdotool..."
+        sudo apt-get update -qq && sudo apt-get install -y xdotool
     fi
 }
 
-# ================================
-# Function to keep the system awake
-# ================================
 keep_awake() {
-    echo "Press Ctrl+C to stop keeping the system awake."
+    echo "🟢 Keeping system awake. Interval: ${INTERVAL}s"
+    echo "Press Ctrl+C to exit."
 
     while true; do
-        # Get the current mouse position
-        local current_mouse_position
-        current_mouse_position=$(xdotool getmouselocation --shell)
-
-        # Extract the X and Y coordinates from the output
-        eval "$current_mouse_position"
-        local x_orig="$X"
-        local y_orig="$Y"
-
-        # Move the mouse slightly and then move it back
-        xdotool mousemove $((x_orig + 1)) "$y_orig"
+        eval "$(xdotool getmouselocation --shell 2>/dev/null)"
+        xdotool mousemove $((X + 1)) "$Y"
         sleep 1
-        xdotool mousemove "$x_orig" "$y_orig"
-
-        # Wait for N seconds before repeating
-        sleep $INTERVAL
+        xdotool mousemove "$X" "$Y"
+        sleep "$INTERVAL"
     done
 }
 
-# ==========================================
-# Main script execution
-# ==========================================
 main() {
-    check_and_install_xdotool
+    # Parse CLI args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --interval)
+            shift && INTERVAL="$1"
+            [[ ! "$INTERVAL" =~ ^[0-9]+$ ]] && echo "Invalid interval: $INTERVAL" && usage
+            ;;
+        --no-install)
+            INSTALL=false
+            ;;
+        -h | --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+        esac
+        shift
+    done
+
+    check_xdotool
     keep_awake
 }
 
-# Execute the main function
-main
+main "$@"

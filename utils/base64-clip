@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# =============================
+# Error handling
+# =============================
+handle_error() {
+    local exit_code=$1
+    echo "❌ Error occurred (exit code $exit_code) during: ${BASH_COMMAND}" >&2
+    exit "$exit_code"
+}
+trap 'handle_error $?' ERR
+
+# =============================
+# Helpers
+# =============================
+usage() {
+    cat <<EOF
+Usage: $0 <command> [options]
+
+Commands:
+  copy                  Encode a file to Base64 and copy it to clipboard
+
+Options:
+  --file <FILE>         File to encode (required)
+  -h, --help            Show this help message
+EOF
+    exit 1
+}
+
+copy_file_to_clipboard() {
+    local file="$1"
+
+    [[ ! -f "$file" ]] && {
+        echo "❌ File not found: $file" >&2
+        exit 1
+    }
+
+    local encoded
+    encoded=$(base64 "$file")
+
+    if command -v xclip &>/dev/null; then
+        echo "$encoded" | xclip -selection clipboard
+        echo "📋 Copied to clipboard via xclip"
+    elif command -v pbcopy &>/dev/null; then
+        echo "$encoded" | pbcopy
+        echo "📋 Copied to clipboard via pbcopy"
+    else
+        echo "❌ No clipboard utility found. Install xclip or pbcopy." >&2
+        exit 1
+    fi
+}
+
+# =============================
+# CLI Entry Point
+# =============================
+main() {
+    local cmd="${1:-}"
+    shift || true
+
+    local FILE_PATH=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --file)
+            shift && FILE_PATH="$1"
+            ;;
+        -h | --help)
+            usage
+            ;;
+        *)
+            echo "❌ Unknown option: $1" >&2
+            usage
+            ;;
+        esac
+        shift
+    done
+
+    case "$cmd" in
+    copy)
+        [[ -z "$FILE_PATH" ]] && {
+            echo "❌ --file is required for 'copy'" >&2
+            usage
+        }
+        copy_file_to_clipboard "$FILE_PATH"
+        ;;
+    *)
+        echo "❌ Unknown command: $cmd" >&2
+        usage
+        ;;
+    esac
+}
+
+main "$@"
