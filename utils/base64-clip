@@ -70,7 +70,7 @@ main() {
             usage
             ;;
         *)
-            echo "❌ Unknown option: $1" >&2
+            echo "Unknown option: $1" >&2
             usage
             ;;
         esac
@@ -86,7 +86,7 @@ main() {
         copy_file_to_clipboard "$FILE_PATH"
         ;;
     *)
-        echo "❌ Unknown command: $cmd" >&2
+        echo "Unknown command: $cmd" >&2
         usage
         ;;
     esac

@@ -1,19 +1,5 @@
 #!/bin/bash
 
-# ==========================================
-# Vercel Deployment Script with Dynamic Environment
-# ==========================================
-# This script allows deploying a project to Vercel with flexible options.
-#
-# Usage:
-#   ./vercel-deploy [-b] [-d] [-f] [-e <environment>] [-- <additional Vercel args>]
-#   -b: Build only
-#   -d: Deploy only
-#   -f: Full process (default)
-#   -e <environment>: Set deployment environment (e.g., production, preview, development)
-#   -- <additional Vercel args>: Pass any additional arguments directly to Vercel CLI
-# ==========================================
-
 # Default environment
 DEPLOY_ENV="production"
 

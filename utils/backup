@@ -269,7 +269,7 @@ main() {
     ;;
   list) list_backups ;;
   *)
-    echo "❌ Unknown command: $command"
+    echo "Unknown command: $command"
     usage
     ;;
   esac

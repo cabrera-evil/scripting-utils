@@ -5,16 +5,6 @@ import re
 import sys
 import subprocess
 
-# ======================================
-# OS Detection Script
-# ======================================
-# This script detects the operating system of a given IP address
-# by analyzing the TTL (Time To Live) value from a ping response.
-#
-# Usage:
-#   python3 osping <ip-address>
-# ======================================
-
 # ================================
 # Function to retrieve the TTL value from a ping response
 # ================================

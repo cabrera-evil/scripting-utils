@@ -2,16 +2,6 @@
 
 set -euo pipefail
 
-# ==========================================
-# System Keep Awake Script
-# ==========================================
-# Keeps the system awake by moving the mouse slightly every N seconds.
-# Optionally installs `xdotool` if missing.
-#
-# Usage:
-#   ./keep-awake.sh [--interval N] [--no-install]
-# ==========================================
-
 DEFAULT_INTERVAL=60
 INTERVAL=$DEFAULT_INTERVAL
 INSTALL=true

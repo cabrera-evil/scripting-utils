@@ -1,25 +1,5 @@
 #!/bin/bash
 
-# =============================
-# Docker Image Builder & Deployer
-# =============================
-# This script builds a Docker image using the format:
-# USERNAME/REPONAME:GITHASH
-# It allows specifying a custom username, repository name,
-# Dockerfile path, build arguments, and optional image pushing.
-#
-# Usage:
-#   ./dockerfile-tools [-u username] [-r repo_name] [-a build_args] [-f dockerfile] [-p] [-l] [-h]
-#
-#   -u: Set Docker Hub username
-#   -r: Set repository name (default: current directory name)
-#   -a: Set Docker build arguments
-#   -f: Specify Dockerfile path
-#   -p: Push image to Docker registry
-#   -l: Tag image as latest
-#   -h: Show usage information
-# =============================
-
 # ================================
 # Global Variables
 # ================================

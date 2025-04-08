@@ -61,7 +61,7 @@ function parse_args() {
         --yes) CONFIRM_YES=true ;;
         apply | delete | list | purge | help) COMMAND="$1" ;;
         *)
-            echo "❌ Unknown option: $1"
+            echo "Unknown option: $1"
             usage
             exit 1
             ;;

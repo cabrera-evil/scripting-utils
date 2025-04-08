@@ -107,7 +107,7 @@ main() {
       SLEEP_SECONDS="$1"
       ;;
     -h | --help) usage ;;
-    *) echo "❌ Unknown option: $1" && usage ;;
+    *) echo "Unknown option: $1" && usage ;;
     esac
     shift
   done
@@ -116,7 +116,7 @@ main() {
 
   case "$command" in
   deploy) deploy ;;
-  *) echo "❌ Unknown command: $command" && usage ;;
+  *) echo "Unknown command: $command" && usage ;;
   esac
 }
 
