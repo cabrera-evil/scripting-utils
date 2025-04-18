@@ -92,6 +92,19 @@ declare -A SECRETS
 function load_secrets() {
     if [[ -n "${FILE:-}" && -f "$FILE" ]]; then
         while IFS= read -r key; do
+            # Install yq if not already installed
+            if ! command -v yq &>/dev/null; then
+                echo "🔧 Installing yq..."
+                if command -v brew &>/dev/null; then
+                    brew install yq
+                elif command -v apt &>/dev/null; then
+                    sudo apt install -y yq
+                else
+                    echo "❌ Unsupported package manager. Please install yq manually."
+                    exit 1
+                fi
+            fi
+            # Parse the YAML file
             value="$(yq -r ".\"$key\"" "$FILE")"
             if [[ "$value" == "null" ]]; then
                 echo "⚠️  Skipping key '$key' (no value found)"
