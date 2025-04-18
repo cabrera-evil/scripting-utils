@@ -8,7 +8,7 @@ set -euo pipefail
 DEFAULT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null ||
     git config --get remote.origin.url | sed -E 's/.*[:\/](.+\/.+)\.git/\1/')"
 DEFAULT_ENV=""
-DEFAULT_FILE=".secrets.env"
+DEFAULT_FILE="secrets.yaml"
 
 # -------------------------
 # Helper Functions
@@ -91,10 +91,14 @@ declare -A SECRETS
 
 function load_secrets() {
     if [[ -n "${FILE:-}" && -f "$FILE" ]]; then
-        while IFS='=' read -r key value; do
-            [[ -z "$key" || "$key" == \#* ]] && continue
+        while IFS= read -r key; do
+            value="$(yq -r ".\"$key\"" "$FILE")"
+            if [[ "$value" == "null" ]]; then
+                echo "⚠️  Skipping key '$key' (no value found)"
+                continue
+            fi
             SECRETS["$key"]="$value"
-        done < <(grep -v '^#' "$FILE")
+        done < <(yq -r 'keys[]' "$FILE")
     fi
 
     if [[ -n "${INLINE:-}" ]]; then
@@ -107,7 +111,7 @@ function load_secrets() {
     fi
 
     if [[ "${#SECRETS[@]}" -eq 0 ]]; then
-        echo "⚠️  No secrets found from file or inline input."
+        echo "⚠️  No secrets found from YAML file or inline input."
         exit 1
     fi
 }
