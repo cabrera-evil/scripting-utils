@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# -------------------------
+# Defaults
+# -------------------------
+WG_CONF_DIR="/etc/wireguard"
+WG_CMD="wg-quick"
+
+# -------------------------
+# Helper Functions
+# -------------------------
+function usage() {
+    cat <<EOF
+Usage: $(basename "$0") [command] [options]
+
+Commands:
+  list                List available WireGuard interfaces
+  up                  Bring up an interface (interactive or specify)
+  down                Bring down an interface (interactive or specify)
+  help                Show this help message
+
+Options:
+  -i, --interface     Specify interface (e.g., wg0)
+
+Examples:
+  $0 list
+  $0 up --interface wg0
+  $0 down              # Interactive with fzf
+EOF
+}
+
+function parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -i | --interface)
+            INTERFACE="$2"
+            shift
+            ;;
+        list | up | down | help)
+            COMMAND="$1"
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+        esac
+        shift
+    done
+}
+
+function require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "❌ '$1' is not installed."
+        exit 1
+    }
+}
+
+function list_interfaces() {
+    find "$WG_CONF_DIR" -type f -name "*.conf" -exec basename {} .conf \;
+}
+
+function select_interface() {
+    local interfaces
+    interfaces=$(list_interfaces)
+    if [[ -z "$interfaces" ]]; then
+        echo "❌ No WireGuard interfaces found in $WG_CONF_DIR"
+        exit 1
+    fi
+    echo "$interfaces" | fzf --prompt="Select WireGuard interface: " --height=10 --border
+}
+
+# -------------------------
+# Commands
+# -------------------------
+function cmd_list() {
+    echo "📋 Available WireGuard interfaces:"
+    list_interfaces || echo "None found."
+}
+
+function cmd_up() {
+    local iface="${INTERFACE:-}"
+    [[ -z "$iface" ]] && iface=$(select_interface)
+    sudo $WG_CMD up "$iface"
+    echo "✅ Interface '$iface' is up."
+}
+
+function cmd_down() {
+    local iface="${INTERFACE:-}"
+    [[ -z "$iface" ]] && iface=$(select_interface)
+    sudo $WG_CMD down "$iface"
+    echo "✅ Interface '$iface' is down."
+}
+
+# -------------------------
+# Main
+# -------------------------
+require_cmd "$WG_CMD"
+require_cmd "fzf"
+
+COMMAND="${1:-help}"
+shift || true
+
+parse_args "$@"
+
+case "$COMMAND" in
+list) cmd_list ;;
+up) cmd_up ;;
+down) cmd_down ;;
+help | *) usage ;;
+esac
