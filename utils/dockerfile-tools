@@ -1,116 +1,208 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# ================================
-# Global Variables
-# ================================
-USERNAME="cabreraevil" # Default Docker Hub username
-REPO_NAME="" # Default to current directory name if not provided
-PUSH=false
-LATEST=false
-BUILD_ARGS=""
-DOCKERFILE="Dockerfile" # Default Dockerfile path
+set -euo pipefail
 
-# ================================
-# Function to get the repository name
-# ================================
-get_repo_name() {
-    if [ -n "$REPO_NAME" ]; then
-        echo "$REPO_NAME"
-    else
-        echo "$(basename "$(pwd)")"
-    fi
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+DEFAULT_USERNAME="cabreraevil"
+DEFAULT_REPO_NAME="$(basename "$(pwd)")"
+DEFAULT_DOCKERFILE="Dockerfile"
+DEFAULT_BUILD_ARGS=""
+DEFAULT_PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
+
+# ===================================
+# UTILITIES
+# ===================================
+
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
 }
 
-# ================================
-# Function to get the Git hash
-# ================================
+info() {
+    echo "INFO: $1"
+}
+
+success() {
+    echo "SUCCESS: $1"
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <command> [options]
+
+Commands:
+  build                   Build the Docker image (optionally push or tag as latest)
+  push                    Push the Docker image (requires --tag)
+  help                    Show this help message
+
+Options:
+  --username <username>   Docker Hub username (default: $DEFAULT_USERNAME)
+  --repo <repo_name>      Repository name (default: current directory name)
+  --dockerfile <path>     Path to Dockerfile (default: Dockerfile)
+  --build-args <args>     Additional Docker build arguments
+  --platform <archs>      Target platforms (default: $DEFAULT_PLATFORMS)
+  --tag <tag>             Specify a tag for push command (required for push)
+  --latest                Tag image as latest
+  --push                  Push after building (only for build)
+
+Examples:
+  ./$(basename "$0") build --push --latest --platform linux/amd64,linux/arm64
+  ./$(basename "$0") push --tag cabreraevil/myrepo:abc123
+EOF
+    exit 1
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
 get_git_hash() {
-    git rev-parse --short HEAD 2>/dev/null || {
-        echo "Error: Unable to retrieve Git hash. Ensure you're in a Git repository." >&2
-        exit 1
-    }
+    git rev-parse --short HEAD 2>/dev/null || abort "Unable to retrieve Git hash. Ensure you're in a Git repository."
 }
 
-# ================================
-# Function to check Docker login
-# ================================
 check_docker_login() {
     if ! docker info >/dev/null 2>&1; then
-        echo "Docker is not logged in. Attempting to log in..."
-        docker login || {
-            echo "Docker login failed. Exiting..." >&2
-            exit 1
-        }
+        info "Docker is not logged in. Attempting to log in..."
+        docker login || abort "Docker login failed."
     fi
 }
 
-# ================================
-# Function to display usage information
-# ================================
-show_usage() {
-    echo "Usage: $0 [-u username] [-r repo_name] [-a build_args] [-f dockerfile] [-p] [-l] [-h]"
-    echo "  -u  Set Docker Hub username"
-    echo "  -r  Set repository name (default: current directory name)"
-    echo "  -a  Set Docker build arguments"
-    echo "  -f  Specify Dockerfile path"
-    echo "  -p  Push image to Docker registry"
-    echo "  -l  Tag image as latest"
-    echo "  -h  Show this help message"
-    exit 0
-}
+# ===================================
+# COMMANDS IMPLEMENTATION
+# ===================================
 
-# ================================
-# Function to build the Docker image
-# ================================
-build_docker_image() {
-    local repo_name=$(get_repo_name)
-    local git_hash=$(get_git_hash)
-    local image_tag="$USERNAME/$repo_name:$git_hash"
+build_image() {
+    local username="$1"
+    local repo_name="$2"
+    local dockerfile="$3"
+    local build_args="$4"
+    local platforms="$5"
+    local push_flag="$6"
+    local latest_flag="$7"
 
-    echo "Building Docker image: $image_tag"
-    docker build $BUILD_ARGS -f "$DOCKERFILE" -t "$image_tag" . || {
-        echo "Error: Docker build failed." >&2
-        exit 1
-    }
+    local git_hash
+    git_hash="$(get_git_hash)"
+    local image_tag="${username}/${repo_name}:${git_hash}"
 
-    echo "Docker image built and tagged as $image_tag"
+    info "Building Docker image: $image_tag for platforms [$platforms]"
+    local build_cmd="docker buildx build --platform $platforms -f $dockerfile -t $image_tag $build_args ."
 
-    if [ "$PUSH" = true ]; then
-        check_docker_login
-        echo "Pushing Docker image: $image_tag"
-        docker push "$image_tag"
+    if [[ "$push_flag" == true ]]; then
+        build_cmd="$build_cmd --push"
+    else
+        build_cmd="$build_cmd --load"
     fi
 
-    if [ "$LATEST" = true ]; then
-        local latest_tag="$USERNAME/$repo_name:latest"
-        echo "Tagging image as latest: $latest_tag"
+    eval "$build_cmd" || abort "Docker build failed."
+    success "Docker image built: $image_tag"
+
+    if [[ "$latest_flag" == true ]]; then
+        local latest_tag="${username}/${repo_name}:latest"
+        info "Tagging image as latest: $latest_tag"
         docker tag "$image_tag" "$latest_tag"
-        echo "Pushing latest tag: $latest_tag"
-        docker push "$latest_tag"
+        if [[ "$push_flag" == true ]]; then
+            info "Pushing latest tag: $latest_tag"
+            docker push "$latest_tag" || abort "Failed to push latest tag."
+            success "Latest tag pushed: $latest_tag"
+        fi
     fi
 }
 
-# ==========================================
-# Main script execution
-# ==========================================
+push_image() {
+    local tag="$1"
+
+    [[ -z "$tag" ]] && abort "--tag is required for push command"
+    check_docker_login
+    info "Pushing Docker image: $tag"
+    docker push "$tag" || abort "Docker push failed."
+    success "Docker image pushed: $tag"
+}
+
+# ===================================
+# MAIN CLI PARSER
+# ===================================
+
 main() {
-    while getopts "u:r:a:f:plh" opt; do
-        case $opt in
-        u) USERNAME="$OPTARG" ;;
-        r) REPO_NAME="$OPTARG" ;;
-        a) BUILD_ARGS="$OPTARG" ;;
-        f) DOCKERFILE="$OPTARG" ;;
-        p) PUSH=true ;;
-        l) LATEST=true ;;
-        h) show_usage ;;
-        *) show_usage ;;
+    if [[ $# -lt 1 ]]; then
+        usage
+    fi
+
+    local cmd="$1"
+    shift
+
+    local username="$DEFAULT_USERNAME"
+    local repo_name="$DEFAULT_REPO_NAME"
+    local dockerfile="$DEFAULT_DOCKERFILE"
+    local build_args="$DEFAULT_BUILD_ARGS"
+    local platforms="$DEFAULT_PLATFORMS"
+    local push_flag=false
+    local latest_flag=false
+    local tag=""
+
+    # Parse global flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --username)
+            username="$2"
+            shift 2
+            ;;
+        --repo)
+            repo_name="$2"
+            shift 2
+            ;;
+        --dockerfile)
+            dockerfile="$2"
+            shift 2
+            ;;
+        --build-args)
+            build_args="$2"
+            shift 2
+            ;;
+        --platform)
+            platforms="$2"
+            shift 2
+            ;;
+        --push)
+            push_flag=true
+            shift
+            ;;
+        --latest)
+            latest_flag=true
+            shift
+            ;;
+        --tag)
+            tag="$2"
+            shift 2
+            ;;
+        --help | -h)
+            usage
+            ;;
+        *)
+            abort "Unknown option: $1"
+            ;;
         esac
     done
 
-    echo "Starting Docker build script at $(date)"
-    build_docker_image
-    echo "Docker build script completed at $(date)"
+    require_cmd docker
+    require_cmd git
+    require_cmd docker buildx
+
+    case "$cmd" in
+    build)
+        build_image "$username" "$repo_name" "$dockerfile" "$build_args" "$platforms" "$push_flag" "$latest_flag"
+        ;;
+    push)
+        push_image "$tag"
+        ;;
+    help)
+        usage
+        ;;
+    *)
+        abort "Unknown command: $cmd"
+        ;;
+    esac
 }
 
-# Execute the main function
 main "$@"
