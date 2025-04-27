@@ -2,133 +2,181 @@
 
 set -euo pipefail
 
-# -------------------------
-# Defaults
-# -------------------------
-TAILSCALE_CMD="tailscale"
-TAILSCALED_CMD="tailscaled"
-RESOLV_CONF="/etc/resolv.conf"
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+TAILSCALE_UP_FLAGS=()
+POSITIONAL_ARGS=()
 
-# -------------------------
-# Helper Functions
-# -------------------------
+# ===================================
+# UTILITIES
+# ===================================
+
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "INFO: $1"
+}
+
+success() {
+    echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
+parse_flags() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --*)
+            TAILSCALE_UP_FLAGS+=("$1")
+            [[ $# -gt 1 && "$2" != --* ]] && {
+                TAILSCALE_UP_FLAGS+=("$2")
+                shift
+            }
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+        esac
+    done
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+
+install_tailscale() {
+    require_cmd curl
+    info "Installing Tailscale..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+    success "Tailscale installed."
+}
+
+connect_tailnet() {
+    require_cmd tailscale
+    info "Connecting to Tailnet with flags: ${TAILSCALE_UP_FLAGS[*]}"
+    sudo tailscale up "${TAILSCALE_UP_FLAGS[@]}"
+    success "Connected to Tailnet."
+}
+
+disconnect_tailnet() {
+    require_cmd tailscale
+    info "Disconnecting from Tailnet..."
+    sudo tailscale down "${TAILSCALE_UP_FLAGS[@]}"
+    success "Disconnected from Tailnet."
+}
+
+status_tailnet() {
+    require_cmd tailscale
+    info "Tailscale status:"
+    tailscale status "${TAILSCALE_UP_FLAGS[@]}"
+}
+
+enable_funnel() {
+    require_cmd tailscale
+    local ports=("${POSITIONAL_ARGS[@]}")
+    [[ ${#ports[@]} -eq 0 ]] && ports=(80)
+
+    info "Enabling Funnel for ports: ${ports[*]}"
+    sudo tailscale funnel enable
+    for port in "${ports[@]}"; do
+        info "Opening Funnel on: $port"
+        sudo tailscale funnel --bg $port "${TAILSCALE_UP_FLAGS[@]}"
+    done
+    success "Funnels enabled."
+}
+
+list_funnels() {
+    require_cmd tailscale
+    info "Active Funnels:"
+    tailscale funnel status "${TAILSCALE_UP_FLAGS[@]}" || info "No Funnels found."
+}
+
+reset_funnels() {
+    require_cmd tailscale
+    info "Resetting all Funnels..."
+    sudo tailscale funnel reset "${TAILSCALE_UP_FLAGS[@]}"
+    success "Funnels reset."
+}
+
+serve_ports() {
+    require_cmd tailscale
+    local ports=("${POSITIONAL_ARGS[@]}")
+    [[ ${#ports[@]} -eq 0 ]] && ports=(80)
+
+    for port in "${ports[@]}"; do
+        info "Serving HTTPS on Tailnet for: $port"
+        sudo tailscale serve https $port "${TAILSCALE_UP_FLAGS[@]}"
+    done
+    success "Serves configured."
+}
+
+list_serves() {
+    require_cmd tailscale
+    info "Active Serves:"
+    tailscale serve status "${TAILSCALE_UP_FLAGS[@]}" || info "No Serve configurations found."
+}
+
+reset_serves() {
+    require_cmd tailscale
+    info "Resetting all Serves..."
+    sudo tailscale serve reset "${TAILSCALE_UP_FLAGS[@]}"
+    success "Serves reset."
+}
+
+# ===================================
+# CLI ENTRYPOINT
+# ===================================
+
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [command] [options]
+Usage: $(basename "$0") <command> [options]
 
 Commands:
-  status                   Show Tailscale status
-  up                       Bring Tailscale up (supports --exit-node <IP|hostname>, --advertise-exit-node)
-  down                     Bring Tailscale down and clean routes/DNS
-  funnels                  List active Funnels
-  serves                   List active Serve configurations
-  help                     Show this help message
+  install                      Install Tailscale on the host.
+  connect                      Connect to the Tailnet.
+  disconnect                   Disconnect from the Tailnet.
+  status                       Show Tailscale status.
+  enable-funnel [ports...]     Enable Funnel and open specified ports (default: 80).
+  list-funnels                 List active Funnels.
+  reset-funnels                Reset all Funnels.
+  serve [ports...]             Serve HTTPS for specified ports in the Tailnet (default: 80).
+  list-serves                  List active Serves.
+  reset-serves                 Reset all Serves.
+  help                         Show this help message.
 
-Options for 'up':
-  --exit-node <IP|hostname>     Use a remote exit node
-  --advertise-exit-node         Advertise this machine as an exit node
-
-Examples:
-  $0 up
-  $0 up --exit-node 100.100.100.100
-  $0 up --advertise-exit-node
+All additional flags after the command are passed directly to 'tailscale up'.
 EOF
     exit 1
 }
 
-require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || {
-        echo "ERROR: '$1' is not installed."
-        exit 1
-    }
+main() {
+    local cmd="${1:-}"
+    shift || true
+
+    parse_flags "$@"
+
+    case "$cmd" in
+    install) install_tailscale ;;
+    connect) connect_tailnet ;;
+    disconnect) disconnect_tailnet ;;
+    status) status_tailnet ;;
+    enable-funnel) enable_funnel ;;
+    list-funnels) list_funnels ;;
+    reset-funnels) reset_funnels ;;
+    serve) serve_ports ;;
+    list-serves) list_serves ;;
+    reset-serves) reset_serves ;;
+    help | "") usage ;;
+    *) abort "Unknown command: $cmd" ;;
+    esac
 }
 
-clean_dns_routes() {
-    echo "INFO: Cleaning routes and DNS..."
-    sudo bash -c "cat > $RESOLV_CONF <<'EOF'
-nameserver 1.1.1.1
-nameserver 1.0.0.1
-EOF"
-    echo "SUCCESS: DNS cleaned."
-}
-
-setup_tailscale_dns() {
-    echo "INFO: Setting up Tailscale DNS..."
-    sudo bash -c "cat > $RESOLV_CONF <<'EOF'
-nameserver 100.100.100.100
-search tail0518ca.ts.net
-EOF"
-    echo "SUCCESS: Tailscale DNS setup done."
-}
-
-# -------------------------
-# Commands
-# -------------------------
-cmd_status() {
-    sudo $TAILSCALE_CMD status
-}
-
-cmd_up() {
-    local exit_node=""
-    local advertise_exit_node=false
-
-    # Parse flags for up
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        --exit-node)
-            exit_node="$2"
-            shift 2
-            ;;
-        --advertise-exit-node)
-            advertise_exit_node=true
-            shift
-            ;;
-        *)
-            echo "ERROR: Unknown option: $1"
-            usage
-            ;;
-        esac
-    done
-
-    local up_cmd="sudo $TAILSCALE_CMD up"
-    [[ -n "$exit_node" ]] && up_cmd="$up_cmd --exit-node=$exit_node --accept-routes"
-    [[ "$advertise_exit_node" == true ]] && up_cmd="$up_cmd --advertise-exit-node"
-
-    echo "INFO: Running '$up_cmd'"
-    eval "$up_cmd"
-
-    setup_tailscale_dns
-}
-
-cmd_down() {
-    sudo $TAILSCALED_CMD --cleanup >/dev/null 2>&1 || echo "INFO: Tailscaled cleanup done."
-    sudo $TAILSCALE_CMD down >/dev/null 2>&1 || echo "INFO: Tailscale was already down."
-    clean_dns_routes
-}
-
-cmd_funnels() {
-    echo "INFO: Listing active Funnels:"
-    sudo $TAILSCALE_CMD funnel list || echo "No Funnels found."
-}
-
-cmd_serves() {
-    echo "INFO: Listing active Serve configurations:"
-    sudo $TAILSCALE_CMD serve status || echo "No Serve configurations found."
-}
-
-# -------------------------
-# Main
-# -------------------------
-require_cmd "ip"
-
-COMMAND="${1:-help}"
-shift || true
-
-case "$COMMAND" in
-status) cmd_status ;;
-up) cmd_up "$@" ;;
-down) cmd_down ;;
-funnels) cmd_funnels ;;
-serves) cmd_serves ;;
-help | *) usage ;;
-esac
+main "$@"
