@@ -5,7 +5,7 @@ set -euo pipefail
 # ===================================
 # GLOBAL CONFIGURATION
 # ===================================
-OUTPUT_DIR="/mnt/scan_results"
+OUTPUT_DIR="$HOME/Documents/scan_results"
 mkdir -p "$OUTPUT_DIR"
 
 # ===================================
