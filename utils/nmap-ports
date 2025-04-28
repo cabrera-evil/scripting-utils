@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+OUTPUT_DIR="/mnt/scan_results"
+mkdir -p "$OUTPUT_DIR"
+
+# ===================================
+# UTILITIES
+# ===================================
+
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "INFO: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
+# ===================================
+# SCAN FUNCTIONS
+# ===================================
+
+basic_scan() {
+    local target="$1"
+    info "Starting basic TCP scan on $target..."
+    nmap -T4 -F -v "$target" -oN "$OUTPUT_DIR/basic_$target.txt"
+    info "Basic scan completed. Results saved to $OUTPUT_DIR/basic_$target.txt"
+}
+
+full_tcp_scan() {
+    local target="$1"
+    info "Starting full TCP port scan on $target..."
+    nmap -p- -T4 -A -v "$target" -oN "$OUTPUT_DIR/full_tcp_$target.txt" -oG "$OUTPUT_DIR/full_tcp_$target.gnmap" -oX "$OUTPUT_DIR/full_tcp_$target.xml"
+    info "Full TCP scan completed. Results saved to $OUTPUT_DIR/"
+}
+
+full_tcp_udp_scan() {
+    local target="$1"
+    info "Starting full TCP and UDP port scan on $target..."
+    nmap -sS -sU -p T:1-65535,U:1-1000 -T4 -A -v "$target" -oN "$OUTPUT_DIR/full_tcp_udp_$target.txt"
+    info "Full TCP/UDP scan completed. Results saved to $OUTPUT_DIR/"
+}
+
+# ===================================
+# CLI ARGUMENT PARSING
+# ===================================
+
+usage() {
+    cat <<EOF
+Usage: $0 <command> <target>
+
+Commands:
+  basic       Perform a basic TCP scan (common ports)
+  full-tcp    Perform a full TCP port scan (1-65535)
+  full-udp    Perform a full TCP and UDP port scan
+
+Example:
+  $0 full-tcp 192.168.1.1
+EOF
+    exit 1
+}
+
+main() {
+    require_cmd nmap
+
+    [[ $# -lt 2 ]] && usage
+
+    local cmd="$1"
+    local target="$2"
+
+    case "$cmd" in
+    basic)
+        basic_scan "$target"
+        ;;
+    full-tcp)
+        full_tcp_scan "$target"
+        ;;
+    full-udp)
+        full_tcp_udp_scan "$target"
+        ;;
+    *)
+        usage
+        ;;
+    esac
+}
+
+main "$@"
