@@ -1,0 +1,150 @@
+
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+CRON_DIR="/etc/cronjobs-manager/jobs.d"
+BACKUP_FILE="/etc/cronjobs-manager/backup.cron"
+
+# ===================================
+# UTILITIES
+# ===================================
+
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "INFO: $1"
+}
+
+success() {
+    echo "SUCCESS: $1"
+}
+
+require_sudo() {
+    if [[ $EUID -ne 0 ]]; then
+        abort "This script must be run as root (use sudo)."
+    fi
+}
+
+backup_cron() {
+    crontab -l > "$BACKUP_FILE" 2>/dev/null || true
+    info "Current crontab backed up to $BACKUP_FILE"
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+
+list_cronjobs() {
+    info "Current cronjobs:"
+    crontab -l || echo "(No cronjobs found)"
+}
+
+add_cronjob() {
+    local schedule="$1"
+    local command="$2"
+    (crontab -l 2>/dev/null; echo "$schedule $command") | crontab -
+    success "Cronjob added: '$schedule $command'"
+}
+
+remove_cronjob() {
+    local pattern="$1"
+    tmpfile=$(mktemp)
+    crontab -l | grep -v "$pattern" > "$tmpfile" || true
+    crontab "$tmpfile"
+    rm "$tmpfile"
+    success "Cronjob(s) matching '$pattern' removed."
+}
+
+load_from_conf() {
+    local file="$1"
+    [[ -f "$file" ]] || abort "Config file '$file' not found."
+
+    backup_cron
+
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        (crontab -l 2>/dev/null; echo "$line") | crontab -
+    done < "$file"
+
+    success "Cronjobs from '$file' loaded."
+}
+
+load_all_confs() {
+    [[ -d "$CRON_DIR" ]] || abort "Cron directory '$CRON_DIR' not found."
+
+    backup_cron
+
+    for file in "$CRON_DIR"/*.conf; do
+        info "Loading $file..."
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            (crontab -l 2>/dev/null; echo "$line") | crontab -
+        done < "$file"
+    done
+
+    success "All cronjobs from '$CRON_DIR' loaded."
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+
+show_help() {
+    cat <<EOF
+Usage: sudo $0 <command> [options]
+
+Commands:
+  list                      List all current cronjobs
+  add "<schedule>" "<cmd>"  Add a new cronjob
+  remove "<pattern>"        Remove cronjobs matching a pattern
+  load "<file.conf>"        Load cronjobs from a specific .conf file
+  load-all                  Load all .conf files from $CRON_DIR
+
+Examples:
+  sudo $0 list
+  sudo $0 add "0 3 * * *" "/usr/local/bin/backup.sh"
+  sudo $0 remove "backup.sh"
+  sudo $0 load /etc/cronjobs-manager/jobs.d/system-updates.conf
+  sudo $0 load-all
+EOF
+}
+
+main() {
+    require_sudo
+    local cmd="${1:-}"
+    shift || true
+
+    case "$cmd" in
+        list)
+            list_cronjobs
+            ;;
+        add)
+            [[ $# -eq 2 ]] || abort "add requires <schedule> and <command>"
+            add_cronjob "$1" "$2"
+            ;;
+        remove)
+            [[ $# -eq 1 ]] || abort "remove requires <pattern>"
+            remove_cronjob "$1"
+            ;;
+        load)
+            [[ $# -eq 1 ]] || abort "load requires <file.conf>"
+            load_from_conf "$1"
+            ;;
+        load-all)
+            load_all_confs
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+main "$@"
+
