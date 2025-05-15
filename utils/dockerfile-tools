@@ -10,6 +10,7 @@ DEFAULT_REPO_NAME="$(basename "$(pwd)")"
 DEFAULT_DOCKERFILE="Dockerfile"
 DEFAULT_BUILD_ARGS=""
 DEFAULT_PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
+DEFAULT_BUILDER_NAME="multiarch-builder"
 
 # ===================================
 # UTILITIES
@@ -44,8 +45,8 @@ Options:
   --build-args <args>     Additional Docker build arguments
   --platform <archs>      Target platforms (default: $DEFAULT_PLATFORMS)
   --tag <tag>             Specify a tag for push command (required for push)
-  --latest                Tag image as latest
-  --push                  Push after building (only for build)
+  --latest                Tag image as latest (only works with --load)
+  --push                  Push after building (recommended for multi-arch)
 
 Examples:
   ./$(basename "$0") build --push --latest --platform linux/amd64,linux/arm64
@@ -69,6 +70,18 @@ check_docker_login() {
     fi
 }
 
+ensure_buildx() {
+    if ! docker buildx version >/dev/null 2>&1; then
+        abort "'docker buildx' is not available. Please ensure Docker Buildx is installed."
+    fi
+
+    if ! docker buildx inspect "$DEFAULT_BUILDER_NAME" >/dev/null 2>&1; then
+        info "Creating buildx builder: $DEFAULT_BUILDER_NAME"
+        docker buildx create --name "$DEFAULT_BUILDER_NAME" --use
+        docker buildx inspect --bootstrap
+    fi
+}
+
 # ===================================
 # COMMANDS IMPLEMENTATION
 # ===================================
@@ -87,7 +100,8 @@ build_image() {
     local image_tag="${username}/${repo_name}:${git_hash}"
 
     info "Building Docker image: $image_tag for platforms [$platforms]"
-    local build_cmd="docker buildx build --platform $platforms -f $dockerfile -t $image_tag $build_args ."
+
+    local build_cmd="docker buildx build --builder $DEFAULT_BUILDER_NAME --platform $platforms -f $dockerfile -t $image_tag $build_args ."
 
     if [[ "$push_flag" == true ]]; then
         build_cmd="$build_cmd --push"
@@ -99,13 +113,13 @@ build_image() {
     success "Docker image built: $image_tag"
 
     if [[ "$latest_flag" == true ]]; then
-        local latest_tag="${username}/${repo_name}:latest"
-        info "Tagging image as latest: $latest_tag"
-        docker tag "$image_tag" "$latest_tag"
         if [[ "$push_flag" == true ]]; then
-            info "Pushing latest tag: $latest_tag"
-            docker push "$latest_tag" || abort "Failed to push latest tag."
-            success "Latest tag pushed: $latest_tag"
+            info "Latest tagging is skipped because image is not loaded locally (multiarch build)."
+        else
+            local latest_tag="${username}/${repo_name}:latest"
+            info "Tagging image as latest: $latest_tag"
+            docker tag "$image_tag" "$latest_tag"
+            success "Latest tag created: $latest_tag"
         fi
     fi
 }
@@ -141,7 +155,6 @@ main() {
     local latest_flag=false
     local tag=""
 
-    # Parse global flags
     while [[ $# -gt 0 ]]; do
         case "$1" in
         --username)
@@ -187,7 +200,7 @@ main() {
 
     require_cmd docker
     require_cmd git
-    require_cmd docker buildx
+    ensure_buildx
 
     case "$cmd" in
     build)
