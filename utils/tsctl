@@ -59,6 +59,13 @@ install_tailscale() {
     success "Tailscale installed."
 }
 
+uninstall_tailscale() {
+    require_cmd tailscale
+    info "Uninstalling Tailscale..."
+    sudo tailscale uninstall
+    success "Tailscale uninstalled."
+}
+
 connect_tailnet() {
     require_cmd tailscale
     info "Connecting to Tailnet with flags: ${TAILSCALE_UP_FLAGS[*]}"
@@ -141,10 +148,11 @@ Usage: $(basename "$0") <command> [options]
 
 Commands:
   install                      Install Tailscale on the host.
-  connect                      Connect to the Tailnet.
-  disconnect                   Disconnect from the Tailnet.
+  uninstall                    Uninstall Tailscale from the host.
+  on                           Connect to the Tailnet.
+  off                          Disconnect from the Tailnet.
   status                       Show Tailscale status.
-  enable-funnel [ports...]     Enable Funnel and open specified ports (default: 80).
+  funnel [ports...]            Enable Funnel and open specified ports (default: 80).
   list-funnels                 List active Funnels.
   reset-funnels                Reset all Funnels.
   serve [ports...]             Serve HTTPS for specified ports in the Tailnet (default: 80).
@@ -165,10 +173,11 @@ main() {
 
     case "$cmd" in
     install) install_tailscale ;;
-    connect) connect_tailnet ;;
-    disconnect) disconnect_tailnet ;;
+    uninstall) uninstall_tailscale ;;
+    on) connect_tailnet ;;
+    off) disconnect_tailnet ;;
     status) status_tailnet ;;
-    enable-funnel) enable_funnel ;;
+    funnel) enable_funnel ;;
     list-funnels) list_funnels ;;
     reset-funnels) reset_funnels ;;
     serve) serve_ports ;;

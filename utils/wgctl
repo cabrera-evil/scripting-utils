@@ -17,8 +17,8 @@ Usage: $(basename "$0") [command] [options]
 
 Commands:
   list                List available WireGuard interfaces
-  up                  Bring up an interface (interactive or specify)
-  down                Bring down an interface (interactive or specify)
+  on                  Bring up an interface (interactive or specify)
+  off                Bring down an interface (interactive or specify)
   help                Show this help message
 
 Options:
@@ -26,8 +26,8 @@ Options:
 
 Examples:
   $0 list
-  $0 up --interface wg0
-  $0 down              # Interactive with fzf
+  $0 on --interface wg0
+  $0 off              # Interactive with fzf
 EOF
 }
 
@@ -38,7 +38,7 @@ function parse_args() {
             INTERFACE="$2"
             shift
             ;;
-        list | up | down | help)
+        list | on | off | help)
             COMMAND="$1"
             ;;
         *)
@@ -107,7 +107,7 @@ parse_args "$@"
 
 case "$COMMAND" in
 list) cmd_list ;;
-up) cmd_up ;;
-down) cmd_down ;;
+on) cmd_up ;;
+off) cmd_down ;;
 help | *) usage ;;
 esac

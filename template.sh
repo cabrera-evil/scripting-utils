@@ -6,6 +6,8 @@ set -euo pipefail
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
 
 # ===================================
 # UTILITIES
@@ -17,16 +19,39 @@ abort() {
 }
 
 info() {
-    echo "INFO: $1"
+    if [[ "$SILENT" == false ]]; then
+        echo "INFO: $1"
+    fi
+}
+
+debug() {
+    if [[ "$DEBUG" == true ]]; then
+        echo "DEBUG: $1"
+    fi
 }
 
 success() {
-    echo "SUCCESS: $1"
+    if [[ "$SILENT" == false ]]; then
+        echo "SUCCESS: $1"
+    fi
 }
 
 require_sudo() {
     if [[ $EUID -ne 0 ]]; then
         abort "This script must be run as root (use sudo)."
+    fi
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
+require_flag_value() {
+    local value="$1"
+    local name="$2"
+
+    if [[ -z "$value" ]]; then
+        abort "Missing value for required flag: --$name"
     fi
 }
 
@@ -36,7 +61,8 @@ require_sudo() {
 
 cmd_help() {
     cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+Usage:
+  $SCRIPT_NAME <command> [options]
 
 Commands:
   help         Show this help message
