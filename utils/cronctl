@@ -5,8 +5,8 @@ set -euo pipefail
 # ===================================
 # GLOBAL CONFIGURATION
 # ===================================
-CRON_DIR="/etc/cronjobs-manager/jobs.d"
-BACKUP_FILE="/etc/cronjobs-manager/backup.cron"
+CRON_DIR="/opt/cronjobs/jobs.d"
+BACKUP_FILE="/opt/cronjobs/backup.cron"
 
 # ===================================
 # UTILITIES
