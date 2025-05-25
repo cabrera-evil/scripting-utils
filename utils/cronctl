@@ -64,22 +64,15 @@ remove_cronjob() {
 load_from_conf() {
     local file="$1"
     [[ -f "$file" ]] || abort "Config file '$file' not found."
-
-    backup_cron
-
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^# ]] && continue
         (crontab -l 2>/dev/null; echo "$line") | crontab -
     done < "$file"
-
     success "Cronjobs from '$file' loaded."
 }
 
 load_all_confs() {
     [[ -d "$CRON_DIR" ]] || abort "Cron directory '$CRON_DIR' not found."
-
-    backup_cron
-
     for file in "$CRON_DIR"/*.conf; do
         info "Loading $file..."
         while IFS= read -r line; do
@@ -87,7 +80,6 @@ load_all_confs() {
             (crontab -l 2>/dev/null; echo "$line") | crontab -
         done < "$file"
     done
-
     success "All cronjobs from '$CRON_DIR' loaded."
 }
 
@@ -105,6 +97,7 @@ Commands:
   remove "<pattern>"        Remove cronjobs matching a pattern
   load "<file.conf>"        Load cronjobs from a specific .conf file
   load-all                  Load all .conf files from $CRON_DIR
+	backup										Backup current crontab to $BACKUP_FILE
 
 Examples:
   sudo $0 list
@@ -139,6 +132,9 @@ main() {
         load-all)
             load_all_confs
             ;;
+				backup)
+						backup_cron
+						;;
         *)
             show_help
             ;;
