@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# ===================================
+# CONFIGURATION
+# ===================================
+REGION="${AWS_REGION:-ca-central-1}"
+PROFILE="${AWS_PROFILE:-default}"
+
+# Detectar si se usan credenciales explícitas en variables de entorno
+if [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+	AWS_OPTS=(--region "$REGION")
+else
+	AWS_OPTS=(--region "$REGION" --profile "$PROFILE")
+fi
+
+# ===================================
+# FUNCTIONS
+# ===================================
+
+get_apps() {
+	aws amplify list-apps "${AWS_OPTS[@]}" \
+		--output json
+}
+
+get_branches() {
+	local app_id="$1"
+	aws amplify list-branches --app-id "$app_id" "${AWS_OPTS[@]}" \
+		--output json
+}
+
+# ===================================
+# MAIN
+# ===================================
+
+apps_json=$(get_apps)
+echo $apps_json
+if [[ "$(echo "$apps_json" | jq length)" -eq 0 ]]; then
+	echo "[]"
+	exit 0
+fi
+
+echo "["
+
+first=true
+mapfile -t app_list < <(echo "$apps_json" | jq -c '.[]')
+
+for app_json in "${app_list[@]}"; do
+	app_id=$(jq -r '.appId' <<<"$app_json")
+	app_name=$(jq -r '.name' <<<"$app_json")
+	domain=$(jq -r '.defaultDomain' <<<"$app_json")
+	repo=$(jq -r '.repository' <<<"$app_json")
+	platform=$(jq -r '.platform' <<<"$app_json")
+	create_time=$(jq -r '.createTime' <<<"$app_json")
+	update_time=$(jq -r '.updateTime' <<<"$app_json")
+	status=$(jq -r '.productionBranch.status // "UNKNOWN"' <<<"$app_json")
+	prod_branch=$(jq -r '.productionBranch.branchName // "none"' <<<"$app_json")
+
+	branches_json=$(get_branches "$app_id")
+
+	if [[ "$first" == false ]]; then echo ","; fi
+	first=false
+
+	jq -n \
+		--arg id "$app_id" \
+		--arg name "$app_name" \
+		--arg domain "$domain" \
+		--arg repo "$repo" \
+		--arg platform "$platform" \
+		--arg create "$create_time" \
+		--arg update "$update_time" \
+		--arg status "$status" \
+		--arg prod_branch "$prod_branch" \
+		--argjson branches "$branches_json" \
+		'{
+      appId: $id,
+      name: $name,
+      repository: $repo,
+      defaultDomain: $domain,
+      platform: $platform,
+      status: $status,
+      productionBranch: $prod_branch,
+      createTime: $create,
+      updateTime: $update,
+      branches: $branches
+    }'
+done
+
+echo "]"
