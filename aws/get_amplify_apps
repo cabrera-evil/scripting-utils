@@ -3,88 +3,187 @@
 set -euo pipefail
 
 # ===================================
-# CONFIGURATION
+# DEFAULT CONFIGURATION
 # ===================================
 REGION="${AWS_REGION:-ca-central-1}"
 PROFILE="${AWS_PROFILE:-default}"
+ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
+SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
 
-# Detectar si se usan credenciales explícitas en variables de entorno
-if [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+# ===================================
+# USAGE
+# ===================================
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") [command] [options]
+
+Commands:
+  list                List Amplify apps and their branches
+  raw-apps            Output raw JSON from 'list-apps'
+  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
+  help                Show this help message
+
+Options:
+  --app-id ID         Required for 'raw-branches'
+  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
+  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
+  --access-key KEY    AWS Access Key ID
+  --secret-key KEY    AWS Secret Access Key
+  --session-token TK  AWS Session Token (optional)
+
+Examples:
+  $0 list --profile myprofile
+  $0 raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
+EOF
+}
+
+# ===================================
+# ARG PARSER
+# ===================================
+parse_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--app-id)
+			APP_ID="$2"
+			shift
+			;;
+		--profile)
+			PROFILE="$2"
+			shift
+			;;
+		--region)
+			REGION="$2"
+			shift
+			;;
+		--access-key)
+			ACCESS_KEY="$2"
+			shift
+			;;
+		--secret-key)
+			SECRET_KEY="$2"
+			shift
+			;;
+		--session-token)
+			SESSION_TOKEN="$2"
+			shift
+			;;
+		list | raw-apps | raw-branches | help) COMMAND="$1" ;;
+		*)
+			echo "Unknown option: $1"
+			usage
+			exit 1
+			;;
+		esac
+		shift
+	done
+}
+
+# ===================================
+# BUILD AWS CLI OPTIONS
+# ===================================
+build_aws_opts() {
 	AWS_OPTS=(--region "$REGION")
-else
-	AWS_OPTS=(--region "$REGION" --profile "$PROFILE")
-fi
+	if [[ -n "$ACCESS_KEY" && -n "$SECRET_KEY" ]]; then
+		export AWS_ACCESS_KEY_ID="$ACCESS_KEY"
+		export AWS_SECRET_ACCESS_KEY="$SECRET_KEY"
+		[[ -n "$SESSION_TOKEN" ]] && export AWS_SESSION_TOKEN="$SESSION_TOKEN"
+	else
+		AWS_OPTS+=(--profile "$PROFILE")
+	fi
+}
 
 # ===================================
-# FUNCTIONS
+# AWS FUNCTIONS
 # ===================================
-
 get_apps() {
-	aws amplify list-apps "${AWS_OPTS[@]}" \
-		--output json
+	aws amplify list-apps "${AWS_OPTS[@]}" --output json | jq -c '.apps[]'
 }
 
 get_branches() {
 	local app_id="$1"
-	aws amplify list-branches --app-id "$app_id" "${AWS_OPTS[@]}" \
-		--output json
+	aws amplify list-branches --app-id "$app_id" "${AWS_OPTS[@]}" --output json | jq -c '.branches'
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_list() {
+	local apps_json
+	mapfile -t apps_json < <(get_apps)
+	if [[ ${#apps_json[@]} -eq 0 ]]; then
+		echo "[]"
+		return
+	fi
+
+	echo "["
+	local first=true
+	for app_json in "${apps_json[@]}"; do
+		local app_id app_name domain repo platform create_time update_time status prod_branch
+		app_id=$(jq -r '.appId' <<<"$app_json")
+		app_name=$(jq -r '.name' <<<"$app_json")
+		domain=$(jq -r '.defaultDomain' <<<"$app_json")
+		repo=$(jq -r '.repository' <<<"$app_json")
+		platform=$(jq -r '.platform' <<<"$app_json")
+		create_time=$(jq -r '.createTime' <<<"$app_json")
+		update_time=$(jq -r '.updateTime' <<<"$app_json")
+		status=$(jq -r '.productionBranch.status // "UNKNOWN"' <<<"$app_json")
+		prod_branch=$(jq -r '.productionBranch.branchName // "none"' <<<"$app_json")
+		branches_json=$(get_branches "$app_id")
+
+		[[ "$first" == false ]] && echo ","
+		first=false
+
+		jq -n \
+			--arg id "$app_id" \
+			--arg name "$app_name" \
+			--arg domain "$domain" \
+			--arg repo "$repo" \
+			--arg platform "$platform" \
+			--arg create "$create_time" \
+			--arg update "$update_time" \
+			--arg status "$status" \
+			--arg prod_branch "$prod_branch" \
+			--argjson branches "$branches_json" \
+			'{
+        appId: $id,
+        name: $name,
+        repository: $repo,
+        defaultDomain: $domain,
+        platform: $platform,
+        status: $status,
+        productionBranch: $prod_branch,
+        createTime: $create,
+        updateTime: $update,
+        branches: $branches
+      }'
+	done
+	echo "]"
+}
+
+cmd_raw_apps() {
+	get_apps | jq -s .
+}
+
+cmd_raw_branches() {
+	if [[ -z "${APP_ID:-}" ]]; then
+		echo "Error: --app-id is required with 'raw-branches'"
+		exit 1
+	fi
+	get_branches "$APP_ID"
 }
 
 # ===================================
 # MAIN
 # ===================================
+COMMAND="${1:-help}"
+shift || true
+parse_args "$@"
+build_aws_opts
 
-apps_json=$(get_apps)
-echo $apps_json
-if [[ "$(echo "$apps_json" | jq length)" -eq 0 ]]; then
-	echo "[]"
-	exit 0
-fi
-
-echo "["
-
-first=true
-mapfile -t app_list < <(echo "$apps_json" | jq -c '.[]')
-
-for app_json in "${app_list[@]}"; do
-	app_id=$(jq -r '.appId' <<<"$app_json")
-	app_name=$(jq -r '.name' <<<"$app_json")
-	domain=$(jq -r '.defaultDomain' <<<"$app_json")
-	repo=$(jq -r '.repository' <<<"$app_json")
-	platform=$(jq -r '.platform' <<<"$app_json")
-	create_time=$(jq -r '.createTime' <<<"$app_json")
-	update_time=$(jq -r '.updateTime' <<<"$app_json")
-	status=$(jq -r '.productionBranch.status // "UNKNOWN"' <<<"$app_json")
-	prod_branch=$(jq -r '.productionBranch.branchName // "none"' <<<"$app_json")
-
-	branches_json=$(get_branches "$app_id")
-
-	if [[ "$first" == false ]]; then echo ","; fi
-	first=false
-
-	jq -n \
-		--arg id "$app_id" \
-		--arg name "$app_name" \
-		--arg domain "$domain" \
-		--arg repo "$repo" \
-		--arg platform "$platform" \
-		--arg create "$create_time" \
-		--arg update "$update_time" \
-		--arg status "$status" \
-		--arg prod_branch "$prod_branch" \
-		--argjson branches "$branches_json" \
-		'{
-      appId: $id,
-      name: $name,
-      repository: $repo,
-      defaultDomain: $domain,
-      platform: $platform,
-      status: $status,
-      productionBranch: $prod_branch,
-      createTime: $create,
-      updateTime: $update,
-      branches: $branches
-    }'
-done
-
-echo "]"
+case "$COMMAND" in
+list) cmd_list ;;
+raw-apps) cmd_raw_apps ;;
+raw-branches) cmd_raw_branches ;;
+help | *) usage ;;
+esac
