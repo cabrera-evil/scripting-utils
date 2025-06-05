@@ -1,39 +1,34 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 # ===================================
 # GLOBAL CONFIGURATION
 # ===================================
-CRON_DIR="/opt/cronjobs/jobs.d"
-BACKUP_FILE="/opt/cronjobs/backup.cron"
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+CRON_DIR="/opt/cronctl/jobs.d"
+CRON_DEST="/etc/cron.d"
+IS_ROOT=$([[ $EUID -eq 0 ]] && echo true || echo false)
 
 # ===================================
 # UTILITIES
 # ===================================
 
 abort() {
-    echo "ERROR: $1" >&2
-    exit 1
+	echo "ERROR: $1" >&2
+	exit 1
 }
 
 info() {
-    echo "INFO: $1"
+	echo "INFO: $1"
 }
 
 success() {
-    echo "SUCCESS: $1"
+	echo "SUCCESS: $1"
 }
 
-require_sudo() {
-    if [[ $EUID -ne 0 ]]; then
-        abort "This script must be run as root (use sudo)."
-    fi
-}
-
-backup_cron() {
-    crontab -l > "$BACKUP_FILE" 2>/dev/null || true
-    info "Current crontab backed up to $BACKUP_FILE"
+sanitize_filename() {
+	basename "$1" | tr -cd 'a-zA-Z0-9._-'
 }
 
 # ===================================
@@ -41,46 +36,107 @@ backup_cron() {
 # ===================================
 
 list_cronjobs() {
-    info "Current cronjobs:"
-    crontab -l || echo "(No cronjobs found)"
+	if [[ "$IS_ROOT" == true ]]; then
+		info "Listing files in $CRON_DEST:"
+		ls -1 "$CRON_DEST"
+	else
+		info "Current user crontab:"
+		crontab -l || echo "(No user cronjobs found)"
+	fi
 }
 
 add_cronjob() {
-    local schedule="$1"
-    local command="$2"
-    (crontab -l 2>/dev/null; echo "$schedule $command") | crontab -
-    success "Cronjob added: '$schedule $command'"
+	local schedule="$1"
+	local command="$2"
+
+	if [[ "$IS_ROOT" == true ]]; then
+		local filename="manual-$(date +%s).cron"
+		local filepath="$CRON_DEST/$filename"
+		echo "$schedule root $command" >"$filepath"
+		chmod 644 "$filepath"
+		chown root:root "$filepath"
+		success "Cronjob written to $filepath"
+	else
+		(
+			crontab -l 2>/dev/null || true
+			echo "$schedule $command"
+		) | crontab -
+		success "User cronjob added: '$schedule $command'"
+	fi
 }
 
 remove_cronjob() {
-    local pattern="$1"
-    tmpfile=$(mktemp)
-    crontab -l | grep -v "$pattern" > "$tmpfile" || true
-    crontab "$tmpfile"
-    rm "$tmpfile"
-    success "Cronjob(s) matching '$pattern' removed."
+	local pattern="$1"
+
+	if [[ "$IS_ROOT" == true ]]; then
+		local matched=false
+		while IFS= read -r file; do
+			rm -f "$file"
+			success "Removed $file"
+			matched=true
+		done < <(grep -l "$pattern" "$CRON_DEST"/* 2>/dev/null || true)
+
+		[[ "$matched" == false ]] && info "No matching files found in $CRON_DEST"
+	else
+		local tmpfile
+		tmpfile=$(mktemp)
+		trap 'rm -f "$tmpfile"' EXIT
+
+		crontab -l 2>/dev/null | grep -v "$pattern" >"$tmpfile" || true
+		crontab "$tmpfile"
+		success "Removed user cronjob(s) matching '$pattern'"
+	fi
 }
 
-load_from_conf() {
-    local file="$1"
-    [[ -f "$file" ]] || abort "Config file '$file' not found."
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" =~ ^# ]] && continue
-        (crontab -l 2>/dev/null; echo "$line") | crontab -
-    done < "$file"
-    success "Cronjobs from '$file' loaded."
+load_cronjobs() {
+	local source="${1:-$CRON_DIR}"
+
+	if [[ ! -e "$source" ]]; then
+		[[ "$source" == "$CRON_DIR" ]] && mkdir -p "$CRON_DIR"
+		info "No such file or directory: '$source'"
+		return
+	fi
+
+	if [[ -d "$source" ]]; then
+		info "Using cron directory '$source'"
+		local found=false
+		for file in "$source"/*.conf; do
+			[[ -f "$file" ]] || continue
+			load_cronjobs "$file"
+			found=true
+		done
+		if [[ "$found" == true ]]; then
+			success "Loaded all cronjobs from '$source'"
+		else
+			info "No .conf files found in '$source'"
+		fi
+		return
+	fi
+
+	# At this point: it's a single file
+	local file="$source"
+	[[ -f "$file" ]] || abort "Config file '$file' not found."
+
+	if [[ "$IS_ROOT" == true ]]; then
+		local dest="$CRON_DEST/$(sanitize_filename "$file")"
+		cp "$file" "$dest"
+		chmod 644 "$dest"
+		chown root:root "$dest"
+		success "Loaded cronjob from $file to $dest"
+	else
+		while IFS= read -r line; do
+			[[ -z "$line" || "$line" =~ ^# ]] && continue
+			(
+				crontab -l 2>/dev/null || true
+				echo "$line"
+			) | crontab -
+		done <"$file"
+		success "Loaded lines from $file to user crontab"
+	fi
 }
 
-load_all_confs() {
-    [[ -d "$CRON_DIR" ]] || abort "Cron directory '$CRON_DIR' not found."
-    for file in "$CRON_DIR"/*.conf; do
-        info "Loading $file..."
-        while IFS= read -r line; do
-            [[ -z "$line" || "$line" =~ ^# ]] && continue
-            (crontab -l 2>/dev/null; echo "$line") | crontab -
-        done < "$file"
-    done
-    success "All cronjobs from '$CRON_DIR' loaded."
+cmd_version() {
+	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
 }
 
 # ===================================
@@ -88,58 +144,54 @@ load_all_confs() {
 # ===================================
 
 show_help() {
-    cat <<EOF
-Usage: sudo $0 <command> [options]
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
 
 Commands:
-  list                      List all current cronjobs
-  add "<schedule>" "<cmd>"  Add a new cronjob
-  remove "<pattern>"        Remove cronjobs matching a pattern
-  load "<file.conf>"        Load cronjobs from a specific .conf file
-  load-all                  Load all .conf files from $CRON_DIR
-	backup										Backup current crontab to $BACKUP_FILE
+  list                      List all cronjobs (in /etc/cron.d or user crontab)
+  add "<schedule>" "<cmd>"  Add a cronjob (root to /etc/cron.d, user to crontab)
+  remove "<pattern>"        Remove cronjob(s) matching pattern
+  load [file.conf]          Load .conf file (or all from $CRON_DIR if no file is provided)
+  help                      Show this help message
 
 Examples:
-  sudo $0 list
-  sudo $0 add "0 3 * * *" "/usr/local/bin/backup.sh"
-  sudo $0 remove "backup.sh"
-  sudo $0 load /etc/cronjobs-manager/jobs.d/system-updates.conf
-  sudo $0 load-all
+  $SCRIPT_NAME list
+  $SCRIPT_NAME add "0 3 * * *" "/usr/local/bin/backup.sh"
+  $SCRIPT_NAME remove "backup.sh"
+  $SCRIPT_NAME load $CRON_DIR/myjob.conf
 EOF
 }
 
 main() {
-    require_sudo
-    local cmd="${1:-}"
-    shift || true
+	local cmd="${1:-}"
+	shift || true
 
-    case "$cmd" in
-        list)
-            list_cronjobs
-            ;;
-        add)
-            [[ $# -eq 2 ]] || abort "add requires <schedule> and <command>"
-            add_cronjob "$1" "$2"
-            ;;
-        remove)
-            [[ $# -eq 1 ]] || abort "remove requires <pattern>"
-            remove_cronjob "$1"
-            ;;
-        load)
-            [[ $# -eq 1 ]] || abort "load requires <file.conf>"
-            load_from_conf "$1"
-            ;;
-        load-all)
-            load_all_confs
-            ;;
-				backup)
-						backup_cron
-						;;
-        *)
-            show_help
-            ;;
-    esac
+	case "$cmd" in
+	list)
+		list_cronjobs
+		;;
+	add)
+		[[ $# -eq 2 ]] || abort "add requires <schedule> and <command>"
+		add_cronjob "$1" "$2"
+		;;
+	remove)
+		[[ $# -eq 1 ]] || abort "remove requires <pattern>"
+		remove_cronjob "$1"
+		;;
+	load)
+		[[ $# -le 1 ]] || abort "load accepts at most one argument"
+		load_cronjobs "${1:-}"
+		;;
+	help | "")
+		show_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		;;
+	esac
 }
 
 main "$@"
-
