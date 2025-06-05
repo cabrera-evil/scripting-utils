@@ -105,6 +105,7 @@ main() {
         case "$1" in
         -i | --interface)
             INTERFACE="$2"
+            shift
             ;;
         --*)
             abort "Unknown option: $1"

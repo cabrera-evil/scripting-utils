@@ -57,7 +57,7 @@ info() {
 }
 
 success() {
-	echo "SUCCESS: $1"
+  echo "SUCCESS: $1"
 }
 
 require_cmd() {
@@ -234,33 +234,48 @@ main() {
     case "$1" in
     --dir)
       BACKUP_DIR="$2"
+      shift
       ;;
     --dest)
       DESTINATION="$2"
+      shift
       ;;
     --tmp)
       TMP_DIR="$2"
+      shift
       ;;
     --port)
       PORT="$2"
+      shift
       ;;
     --output)
       OUTPUT_NAME="$2"
+      shift
       ;;
     --zip-name)
       ZIP_NAME="$2"
+      shift
       ;;
     --dirs)
       IFS=',' read -ra DIRS_TO_BACKUP <<<"$2"
+      shift
       ;;
     --exclude)
       IFS=',' read -ra EXCLUDE_PATTERN <<<"$2"
+      shift
       ;;
     --compress)
       COMPRESSION_LEVEL="-$2"
+      shift
       ;;
-    --no-notify) NOTIFY=false ;;
-    --verbose) VERBOSE=true ;;
+    --no-notify)
+      NOTIFY=false
+      shift
+      ;;
+    --verbose)
+      VERBOSE=true
+      shift
+      ;;
     --*)
       abort "Unknown option: $1"
       ;;

@@ -108,23 +108,35 @@ main() {
     case "$1" in
     --repo)
       REPO="$2"
+      shift
       ;;
     --ref)
       REF="$2"
+      shift
       ;;
     --env)
       ENVIRONMENT="$2"
+      shift
       ;;
     --desc)
       DESCRIPTION="$2"
+      shift
       ;;
     --url)
       URL="$2"
+      shift
       ;;
-    --prod) IS_PRODUCTION=true ;;
-    --transient) IS_TRANSIENT=true ;;
+    --prod)
+      IS_PRODUCTION=true
+      shift
+      ;;
+    --transient)
+      IS_TRANSIENT=true
+      shift
+      ;;
     --sleep)
       SLEEP_SECONDS="$2"
+      shift
       ;;
     --*)
       abort "Unknown option: $1"

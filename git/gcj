@@ -125,15 +125,19 @@ main() {
     case "$1" in
     --repo)
       repo="$2"
+      shift
       ;;
     --message)
       message="$2"
+      shift
       ;;
     --time)
       time="$2"
+      shift
       ;;
     --date)
       date="$2"
+      shift
       ;;
     --*)
       abort "Unknown option: $1"

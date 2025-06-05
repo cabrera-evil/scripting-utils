@@ -29,7 +29,7 @@ info() {
 }
 
 success() {
-	echo "SUCCESS: $1"
+    echo "SUCCESS: $1"
 }
 
 require_cmd() {
@@ -99,9 +99,11 @@ main() {
         --interval)
             [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]] && abort "Invalid or missing value for --interval"
             INTERVAL="$2"
+            shift
             ;;
         --no-install)
             INSTALL=false
+            shift
             ;;
         --*)
             abort "Unknown option: $1"

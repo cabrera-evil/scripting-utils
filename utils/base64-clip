@@ -23,7 +23,7 @@ info() {
 }
 
 success() {
-	echo "SUCCESS: $1"
+    echo "SUCCESS: $1"
 }
 
 require_cmd() {
@@ -90,6 +90,7 @@ main() {
         case "$1" in
         --file)
             FILE_PATH="$2"
+            shift
             ;;
         --*)
             abort "Unknown option: $1"
