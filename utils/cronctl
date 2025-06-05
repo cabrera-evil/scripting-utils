@@ -6,6 +6,12 @@ set -euo pipefail
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
 CRON_DIR="/opt/cronctl/jobs.d"
 CRON_DEST="/etc/cron.d"
 IS_ROOT=$([[ $EUID -eq 0 ]] && echo true || echo false)
@@ -25,6 +31,10 @@ info() {
 
 success() {
 	echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
 
 sanitize_filename() {
@@ -153,6 +163,7 @@ Commands:
   remove "<pattern>"        Remove cronjob(s) matching pattern
   load [file.conf]          Load .conf file (or all from $CRON_DIR if no file is provided)
   help                      Show this help message
+  version                   Show script version
 
 Examples:
   $SCRIPT_NAME list

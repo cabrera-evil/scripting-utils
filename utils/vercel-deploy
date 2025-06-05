@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 # ===================================
 # GLOBAL CONFIGURATION
 # ===================================
-DEFAULT_DEPLOY_ENV="production"
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
+DEPLOY_ENV="production"
 
 # ===================================
 # UTILITIES
 # ===================================
-
 abort() {
     echo "ERROR: $1" >&2
     exit 1
@@ -21,37 +27,12 @@ info() {
 }
 
 success() {
-    echo "SUCCESS: $1"
-}
-
-usage() {
-    cat <<EOF
-Usage: $(basename "$0") <command> [options]
-
-Commands:
-  build                   Pull env variables and build the project
-  deploy                  Deploy the project (after build)
-  full                    Pull env, build, and deploy
-
-Options:
-  --env <environment>     Set deployment environment (default: production)
-  --help                  Show this help message
-  -- [args]               Pass additional arguments to Vercel CLI (only for deploy)
-
-Examples:
-  ./$(basename "$0") build --env preview
-  ./$(basename "$0") deploy --env preview -- --prod
-EOF
-    exit 1
+	echo "SUCCESS: $1"
 }
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
-
-# ===================================
-# COMMANDS IMPLEMENTATION
-# ===================================
 
 install_vercel_cli() {
     info "Checking Vercel CLI..."
@@ -71,7 +52,10 @@ pull_vercel_env() {
     vercel pull --yes --environment="$env" || abort "Failed to pull Vercel environment variables."
 }
 
-build_project() {
+# ===================================
+# COMMANDS
+# ===================================
+cmd_build() {
     local env="$1"
     local flag="$env"
     [[ "$env" == "production" ]] && flag="prod"
@@ -81,8 +65,9 @@ build_project() {
     success "Build completed successfully."
 }
 
-deploy_project() {
-    local env="$1"; shift
+cmd_deploy() {
+    local env="$1"
+    shift
     local flag="$env"
     [[ "$env" == "production" ]] && flag="prod"
 
@@ -91,61 +76,83 @@ deploy_project() {
     success "Deployment completed successfully."
 }
 
+cmd_version() {
+    echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
 # ===================================
-# MAIN CLI PARSER
+# MAIN LOGIC
 # ===================================
+show_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  build                   Pull env variables and build the project
+  deploy                  Deploy the project (after build)
+  full                    Pull env, build, and deploy
+  help                    Show this help message
+  version                 Show script version
+
+Options:
+  --env <environment>     Set deployment environment (default: production)
+  --help                  Show this help message
+  -- [args]               Pass additional arguments to Vercel CLI (only for deploy)
+
+Examples:
+  $SCRIPT_NAME build --env preview
+  $SCRIPT_NAME deploy --env preview -- --prod
+EOF
+    exit 1
+}
 
 main() {
-    if [[ $# -lt 1 ]]; then
-        usage
-    fi
-
-    local cmd="$1"
-    shift
-
-    local deploy_env="$DEFAULT_DEPLOY_ENV"
-    local additional_args=()
-
-    # Parse flags
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --env)
-                deploy_env="$2"
-                shift 2
-                ;;
-            --help|-h)
-                usage
-                ;;
-            --)
-                shift
-                additional_args=("$@")
-                break
-                ;;
-            *)
-                abort "Unknown option: $1"
-                ;;
-        esac
-    done
-
     require_cmd pnpm
     install_vercel_cli
 
-    case "$cmd" in
-        build)
-            pull_vercel_env "$deploy_env"
-            build_project "$deploy_env"
+    local cmd="${1:-}"
+    shift || true
+
+    local additional_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --env)
+            DEPLOY_ENV="$2"
             ;;
-        deploy)
-            deploy_project "$deploy_env" "${additional_args[@]}"
-            ;;
-        full)
-            pull_vercel_env "$deploy_env"
-            build_project "$deploy_env"
-            deploy_project "$deploy_env" "${additional_args[@]}"
+        --)
+            additional_args=("$@")
+            break
             ;;
         *)
-            abort "Unknown command: $cmd"
+            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
             ;;
+        esac
+        shift
+    done
+
+    case "$cmd" in
+    build)
+        pull_vercel_env "$DEPLOY_ENV"
+        cmd_build "$DEPLOY_ENV"
+        ;;
+    deploy)
+        cmd_deploy "$DEPLOY_ENV" "${additional_args[@]}"
+        ;;
+    full)
+        pull_vercel_env "$DEPLOY_ENV"
+        cmd_build "$DEPLOY_ENV"
+        cmd_deploy "$DEPLOY_ENV" "${additional_args[@]}"
+        ;;
+    help | "")
+        show_help
+        ;;
+    version)
+        cmd_version
+        ;;
+    *)
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+        ;;
     esac
 }
 

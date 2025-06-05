@@ -1,113 +1,72 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# -------------------------
-# Defaults
-# -------------------------
-DEFAULT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null ||
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
+REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null ||
     git config --get remote.origin.url | sed -E 's/.*[:\/](.+\/.+)\.git/\1/')"
-DEFAULT_ENV=""
-DEFAULT_FILE="secrets.yaml"
+ENV=""
+FILE="secrets.yaml"
+INLINE=""
+declare -A SECRETS
 
-# -------------------------
-# Helper Functions
-# -------------------------
-function usage() {
-    cat <<EOF
-Usage: $(basename "$0") [command] [options]
-
-Commands:
-  apply           Set secrets from file or inline
-  delete          Delete secrets parsed from file or inline
-  list            List secrets in the repo or environment
-  purge           Delete ALL secrets from the repo or environment (danger!)
-  help            Show this help message
-
-Options:
-  -r, --repo       GitHub repo (owner/repo). Default: $DEFAULT_REPO
-  -e, --env        Environment name (for environment-level secrets)
-  -f, --file       File with secrets in KEY=VALUE format (default: $DEFAULT_FILE)
-  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
-  --yes            Skip confirmation prompt for purge
-
-Examples:
-  $0 apply --file .env.production
-  $0 delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
-  $0 purge --env production --yes
-  $0 list
-EOF
+# ===================================
+# UTILITIES
+# ===================================
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
 }
 
-function parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        -r | --repo)
-            REPO="$2"
-            shift
-            ;;
-        -e | --env)
-            ENV="$2"
-            shift
-            ;;
-        -f | --file)
-            FILE="$2"
-            shift
-            ;;
-        -i | --inline)
-            INLINE="$2"
-            shift
-            ;;
-        --yes) CONFIRM_YES=true ;;
-        apply | delete | list | purge | help) COMMAND="$1" ;;
-        *)
-            echo "Unknown option: $1"
-            usage
-            exit 1
-            ;;
-        esac
-        shift
-    done
+info() {
+    echo "INFO: $1"
+}
 
-    REPO="${REPO:-$DEFAULT_REPO}"
-    ENV="${ENV:-$DEFAULT_ENV}"
-    FILE="${FILE:-$DEFAULT_FILE}"
+success() {
+    echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
 
 function log_summary() {
-    echo -e "\n🔐 GitHub Secrets CLI"
+    info -e "\nGitHub Secrets CLI"
     echo "──────────────────────────────"
-    echo "📦 Repo:        $REPO"
-    [[ -n "$ENV" ]] && echo "🏷️  Environment: $ENV"
-    [[ -n "${FILE:-}" && -f "$FILE" ]] && echo "📄 File:        $FILE"
-    [[ -n "${INLINE:-}" ]] && echo "✍️  Inline:      $INLINE"
+    info "Repo:        $REPO"
+    [[ -n "$ENV" ]] && info "Environment: $ENV"
+    [[ -n "${FILE:-}" && -f "$FILE" ]] && info "File:        $FILE"
+    [[ -n "${INLINE:-}" ]] && info "Inline:      $INLINE"
     echo "──────────────────────────────"
 }
-
-# -------------------------
-# Secret Source Parser
-# -------------------------
-declare -A SECRETS
 
 function load_secrets() {
     if [[ -n "${FILE:-}" && -f "$FILE" ]]; then
         while IFS= read -r key; do
             # Install yq if not already installed
             if ! command -v yq &>/dev/null; then
-                echo "🔧 Installing yq..."
+                info "🔧 Installing yq..."
                 if command -v brew &>/dev/null; then
                     brew install yq
                 elif command -v apt &>/dev/null; then
                     sudo apt install -y yq
                 else
-                    echo "❌ Unsupported package manager. Please install yq manually."
-                    exit 1
+                    abort "Unsupported package manager. Please install yq manually."
                 fi
             fi
             # Parse the YAML file
             value="$(yq -r ".\"$key\"" "$FILE")"
             if [[ "$value" == "null" ]]; then
-                echo "⚠️  Skipping key '$key' (no value found)"
+                info "Skipping key '$key' (no value found)"
                 continue
             fi
             SECRETS["$key"]="$value"
@@ -124,101 +83,159 @@ function load_secrets() {
     fi
 
     if [[ "${#SECRETS[@]}" -eq 0 ]]; then
-        echo "⚠️  No secrets found from YAML file or inline input."
-        exit 1
+        abort "No secrets found from YAML file or inline input."
     fi
 }
 
-# -------------------------
-# Commands
-# -------------------------
-function apply_secrets() {
+# ===================================
+# COMMANDS
+# ===================================
+function cmd_apply() {
     for key in "${!SECRETS[@]}"; do
         local value="${SECRETS[$key]}"
         if [[ -n "$ENV" ]]; then
-            echo "🔐 Setting env secret: $key"
+            info "Setting env secret: $key"
             gh secret set "$key" --env "$ENV" --body "$value" --repo "$REPO"
         else
-            echo "🔐 Setting repo secret: $key"
+            info "Setting repo secret: $key"
             gh secret set "$key" --body "$value" --repo "$REPO"
         fi
     done
 }
 
-function delete_secrets() {
+function cmd_delete() {
     for key in "${!SECRETS[@]}"; do
         if [[ -n "$ENV" ]]; then
-            echo "🗑️ Deleting env secret: $key"
+            info "Deleting env secret: $key"
             gh secret delete "$key" --env "$ENV" --repo "$REPO" || true
         else
-            echo "🗑️ Deleting repo secret: $key"
+            info "Deleting repo secret: $key"
             gh secret delete "$key" --repo "$REPO" || true
         fi
     done
 }
 
-function list_secrets() {
+function cmd_list() {
     if [[ -n "$ENV" ]]; then
-        echo "📋 Environment secrets for '$ENV':"
+        info "Environment secrets for '$ENV':"
         gh secret list --env "$ENV" --repo "$REPO"
     else
-        echo "📋 Repository secrets:"
+        info "Repository secrets:"
         gh secret list --repo "$REPO"
     fi
 }
 
-function purge_secrets() {
+function cmd_purge() {
     local scope=("--repo" "$REPO")
     [[ -n "$ENV" ]] && scope+=(--env "$ENV")
 
-    echo "⚠️  This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
+    info "This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
     if [[ "${CONFIRM_YES:-}" != "true" ]]; then
         read -r -p "Are you sure? (y/N): " confirm
         [[ "$confirm" != "y" && "$confirm" != "Y" ]] && {
-            echo "❌ Aborted"
-            exit 1
+            abort "Aborted"
         }
     fi
 
     mapfile -t secrets < <(gh secret list "${scope[@]}" --json name -q '.[].name')
     if [[ ${#secrets[@]} -eq 0 ]]; then
-        echo "ℹ️ No secrets to delete."
+        info "No secrets to delete."
         return
     fi
 
     for key in "${secrets[@]}"; do
-        echo "🗑️ Deleting secret: $key"
+        info "Deleting secret: $key"
         gh secret delete "$key" "${scope[@]}" || true
     done
 }
 
-# -------------------------
-# Main
-# -------------------------
-COMMAND="${1:-help}"
-shift || true
+# ===================================
+# MAIN LOGIC
+# ===================================
+function show_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
 
-parse_args "$@"
+Commands:
+  apply           Set secrets from file or inline
+  delete          Delete secrets parsed from file or inline
+  list            List secrets in the repo or environment
+  purge           Delete ALL secrets from the repo or environment (danger!)
+  help            Show this help message
+  version         Show script version
 
-case "$COMMAND" in
-apply)
-    log_summary
-    load_secrets
-    apply_secrets
-    ;;
-delete)
-    log_summary
-    load_secrets
-    delete_secrets
-    ;;
-list)
-    list_secrets
-    ;;
-purge)
-    log_summary
-    purge_secrets
-    ;;
-help | *)
-    usage
-    ;;
-esac
+Options:
+  -r, --repo       GitHub repo (owner/repo). Default: $REPO
+  -e, --env        Environment name (for environment-level secrets)
+  -f, --file       File with secrets in KEY=VALUE format (default: $FILE)
+  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
+  --yes            Skip confirmation prompt for purge
+
+Examples:
+  $SCRIPT_NAME apply --file .env.production
+  $SCRIPT_NAME delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
+  $SCRIPT_NAME purge --env production --yes
+  $SCRIPT_NAME list
+EOF
+}
+
+main() {
+    cmd="${1:-}"
+    shift || true
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -r | --repo)
+            REPO="$2"
+            ;;
+        -e | --env)
+            ENV="$2"
+            ;;
+        -f | --file)
+            FILE="$2"
+            ;;
+        -i | --inline)
+            INLINE="$2"
+            ;;
+        --yes) CONFIRM_YES=true ;;
+        --*)
+            abort "Unknown option: $1"
+            ;;
+        *)
+            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+            ;;
+        esac
+        shift
+    done
+
+    case "$cmd" in
+    apply)
+        log_summary
+        load_secrets
+        cmd_apply
+        ;;
+    delete)
+        log_summary
+        load_secrets
+        cmd_delete
+        ;;
+    list)
+        cmd_list
+        ;;
+    purge)
+        log_summary
+        cmd_purge
+        ;;
+    help | "")
+        show_help
+        ;;
+    version)
+        cmd_version
+        ;;
+    *)
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+        ;;
+    esac
+}
+
+main "$@"

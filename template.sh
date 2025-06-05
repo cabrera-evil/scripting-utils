@@ -58,11 +58,9 @@ require_flag_value() {
 # ===================================
 # COMMANDS
 # ===================================
-
 cmd_help() {
     cat <<EOF
-Usage:
-  $SCRIPT_NAME <command> [options]
+Usage: $SCRIPT_NAME <command> [options]
 
 Commands:
   help         Show this help message
@@ -86,7 +84,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-
 main() {
     local cmd="${1:-}"
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 # ===================================
@@ -7,6 +6,8 @@ set -euo pipefail
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
 
 # ===================================
 # DEFAULT CONFIGURATION
@@ -18,77 +19,25 @@ SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
 
 # ===================================
-# USAGE
+# UTILITIES
 # ===================================
-usage() {
-	cat <<EOF
-Usage: $SCRIPT_NAME [command] [options]
-
-Commands:
-  list                List Amplify apps and their branches
-  raw-apps            Output raw JSON from 'list-apps'
-  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
-  help                Show this help message
-  version             Show script version
-
-Options:
-  --app-id ID         Required for 'raw-branches'
-  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
-  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
-  --access-key KEY    AWS Access Key ID
-  --secret-key KEY    AWS Secret Access Key
-  --session-token TK  AWS Session Token (optional)
-
-Examples:
-  $0 list --profile myprofile
-  $0 raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
-EOF
+abort() {
+	echo "ERROR: $1" >&2
+	exit 1
 }
 
-# ===================================
-# ARG PARSER
-# ===================================
-parse_args() {
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-		--app-id)
-			APP_ID="$2"
-			shift
-			;;
-		--profile)
-			PROFILE="$2"
-			shift
-			;;
-		--region)
-			REGION="$2"
-			shift
-			;;
-		--access-key)
-			ACCESS_KEY="$2"
-			shift
-			;;
-		--secret-key)
-			SECRET_KEY="$2"
-			shift
-			;;
-		--session-token)
-			SESSION_TOKEN="$2"
-			shift
-			;;
-		list | raw-apps | raw-branches | help) COMMAND="$1" ;;
-		*)
-			echo "Unknown option: $1"
-			usage
-			exit 1
-			;;
-		esac
-		shift
-	done
+info() {
+	echo "INFO: $1"
 }
 
-# ===================================
-# BUILD AWS CLI OPTIONS
-# ===================================
+success() {
+	echo "SUCCESS: $1"
+}
+
+require_cmd() {
+	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
 build_aws_opts() {
 	AWS_OPTS=(--region "$REGION")
 	if [[ -n "$ACCESS_KEY" && -n "$SECRET_KEY" ]]; then
@@ -100,9 +49,6 @@ build_aws_opts() {
 	fi
 }
 
-# ===================================
-# AWS FUNCTIONS
-# ===================================
 get_apps() {
 	aws amplify list-apps "${AWS_OPTS[@]}" --output json | jq -c '.apps[]'
 }
@@ -185,17 +131,89 @@ cmd_version() {
 }
 
 # ===================================
-# MAIN
+# MAIN LOGIC
 # ===================================
-COMMAND="${1:-help}"
-shift || true
-parse_args "$@"
-build_aws_opts
+show_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
 
-case "$COMMAND" in
-list) cmd_list ;;
-raw-apps) cmd_raw_apps ;;
-raw-branches) cmd_raw_branches ;;
-version) cmd_version ;;
-help | *) usage ;;
-esac
+Commands:
+  list                List Amplify apps and their branches
+  raw-apps            Output raw JSON from 'list-apps'
+  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --app-id ID         Required for 'raw-branches'
+  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
+  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
+  --access-key KEY    AWS Access Key ID
+  --secret-key KEY    AWS Secret Access Key
+  --session-token TK  AWS Session Token (optional)
+
+Examples:
+  $SCRIPT_NAME list --profile myprofile
+  $SCRIPT_NAME raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
+EOF
+}
+
+main() {
+	local cmd="${1:-}"
+	shift || true
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--app-id)
+			APP_ID="$2"
+			shift
+			;;
+		--profile)
+			PROFILE="$2"
+			shift
+			;;
+		--region)
+			REGION="$2"
+			shift
+			;;
+		--access-key)
+			ACCESS_KEY="$2"
+			shift
+			;;
+		--secret-key)
+			SECRET_KEY="$2"
+			shift
+			;;
+		--session-token)
+			SESSION_TOKEN="$2"
+			shift
+			;;
+		--*)
+			abort "Unknown option: $1"
+			;;
+		*)
+			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			;;
+		esac
+		shift
+	done
+
+	build_aws_opts
+
+	case "$cmd" in
+	list) cmd_list ;;
+	raw-apps) cmd_raw_apps ;;
+	raw-branches) cmd_raw_branches ;;
+	help | "")
+		show_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		;;
+	esac
+}
+
+main "$@"

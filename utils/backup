@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# =============================
-# Defaults
-# =============================
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
 BACKUP_DIR="$HOME/Documents/Backups"
 DESTINATION="$HOME"
 TMP_DIR="/tmp"
@@ -15,7 +22,6 @@ COMPRESSION_LEVEL="-0"
 OUTPUT_NAME=""
 ZIP_NAME=""
 DUNST_ID=91190
-
 DIRS_TO_BACKUP=(
   "$HOME/.ssh"
   "$HOME/git"
@@ -25,7 +31,6 @@ DIRS_TO_BACKUP=(
   "$HOME/Documents"
   "$HOME/Pictures"
 )
-
 EXCLUDE_PATTERN=(
   "*/node_modules/*"
   "*/dist/*"
@@ -38,9 +43,27 @@ EXCLUDE_PATTERN=(
   "*.tmp"
 )
 
-# =============================
-# Helpers
-# =============================
+# ===================================
+# UTILITIES
+# ===================================
+
+abort() {
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+info() {
+  echo "INFO: $1"
+}
+
+success() {
+	echo "SUCCESS: $1"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
 notify() {
   $NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
 }
@@ -51,53 +74,16 @@ notify_progress() {
   $NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
 }
 
-handle_error() {
-  local exit_code=$1
-  local command="${BASH_COMMAND}"
-  if [ $exit_code -ne 0 ]; then
-    notify "❌ Failed during: $command"
-    exit 1
-  fi
-}
-trap 'handle_error $?' ERR
+# ===================================
+# COMMANDS
+# ===================================
 
-usage() {
-  cat <<EOF
-Usage: $0 <command> [options]
-
-Commands:
-  create              Create a backup
-  share               Share latest backup via HTTP
-  download <IP>       Download and restore from remote backup server
-  restore <FILE>      Restore from local .zip backup
-  list                List local backup files
-
-Options:
-  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
-  --dest <DIR>        Restore destination directory (default: $DESTINATION)
-  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
-  --port <PORT>       HTTP port to share/download (default: $PORT)
-  --output <NAME>     Override output backup file name
-  --zip-name <NAME>   Expected zip file to download (default: auto)
-  --dirs <D1,D2>      Comma-separated directories to back up
-  --exclude <PATTS>   Comma-separated exclude patterns
-  --compress <0|9>    Zip compression level (default: 0)
-  --no-notify         Disable dunstify popups
-  --verbose           Show zip/rsync output live
-  -h, --help          Show this help
-EOF
-  exit 1
-}
-
-# =============================
-# Core Actions
-# =============================
-create_backup() {
+cmd_create() {
   mkdir -p "$BACKUP_DIR"
   local filename="${OUTPUT_NAME:-bk-$(date +%Y-%m-%d).zip}"
   local path="$BACKUP_DIR/$filename"
 
-  echo "📦 Creating: $path"
+  info "Creating: $path"
   notify "Creating backup..."
 
   # Collect file list
@@ -134,23 +120,22 @@ create_backup() {
   fi
 
   rm -f "$tmp_list"
-  notify_progress 100 "✅ Backup complete: $filename"
-  notify "✅ Backup complete: $filename"
-  echo "✅ Backup ready: $path"
+  notify_progress 100 "Backup complete: $filename"
+  notify "Backup complete: $filename"
+  success "Backup ready: $path"
 }
 
-share_backup() {
+cmd_share() {
   local ip=$(hostname -I | awk '{print $1}')
-  echo "🌍 Serving: http://$ip:$PORT"
+  info "Serving: http://$ip:$PORT"
   cd "$BACKUP_DIR"
   python3 -m http.server "$PORT" >/dev/null 2>&1
 }
 
-restore_backup() {
+cmd_restore() {
   local file="$1"
   [[ ! -f "$file" ]] && {
-    echo "❌ File not found: $file"
-    exit 1
+    abort "File not found: $file"
   }
 
   notify "Restoring from $file"
@@ -176,101 +161,136 @@ restore_backup() {
     fi
   done
 
-  notify_progress 100 "✅ Restore complete"
-  notify "✅ Restore complete: $file"
-  echo "✅ Restore complete: $file"
+  notify_progress 100 "Restore complete"
+  notify "Restore complete: $file"
+  success "Restore complete: $file"
 }
 
-download_backup() {
+cmd_download() {
   local ip="$1"
   local zip="${ZIP_NAME:-bk-$(date +%Y-%m-%d).zip}"
   local url="http://$ip:$PORT/$zip"
   local out_path="$TMP_DIR/$zip"
 
-  echo "⬇️ Downloading from: $url"
+  info "⬇Downloading from: $url"
   wget -q -O "$out_path" "$url" || {
-    echo "❌ Download failed"
-    exit 1
+    abort "Download failed"
   }
 
-  restore_backup "$out_path"
+  cmd_restore "$out_path"
 }
 
-list_backups() {
-  echo "📂 Backups in $BACKUP_DIR:"
-  ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || echo "No backups found."
+cmd_list() {
+  info "Backups in $BACKUP_DIR:"
+  ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || info "No backups found."
 }
 
-# =============================
-# Main CLI
-# =============================
+cmd_version() {
+  echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+# ===================================
+# MAIN LOGIC
+# ===================================
+
+show_help() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  create              Create a backup
+  share               Share latest backup via HTTP
+  download <IP>       Download and restore from remote backup server
+  restore <FILE>      Restore from local .zip backup
+  list                List local backup files
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
+  --dest <DIR>        Restore destination directory (default: $DESTINATION)
+  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
+  --port <PORT>       HTTP port to share/download (default: $PORT)
+  --output <NAME>     Override output backup file name
+  --zip-name <NAME>   Expected zip file to download (default: auto)
+  --dirs <D1,D2>      Comma-separated directories to back up
+  --exclude <PATTS>   Comma-separated exclude patterns
+  --compress <0|9>    Zip compression level (default: 0)
+  --no-notify         Disable dunstify popups
+  --verbose           Show zip/rsync output live
+
+Examples:
+  $SCRIPT_NAME create --dir ~/Backups --dest ~/Restore
+  $SCRIPT_NAME share
+  $SCRIPT_NAME download
+EOF
+}
+
 main() {
-  local command="${1:-}"
+  local cmd="${1:-}"
   shift || true
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --dir)
-      shift
-      BACKUP_DIR="$1"
+      BACKUP_DIR="$2"
       ;;
     --dest)
-      shift
-      DESTINATION="$1"
+      DESTINATION="$2"
       ;;
     --tmp)
-      shift
-      TMP_DIR="$1"
+      TMP_DIR="$2"
       ;;
     --port)
-      shift
-      PORT="$1"
+      PORT="$2"
       ;;
     --output)
-      shift
-      OUTPUT_NAME="$1"
+      OUTPUT_NAME="$2"
       ;;
     --zip-name)
-      shift
-      ZIP_NAME="$1"
+      ZIP_NAME="$2"
       ;;
     --dirs)
-      shift
-      IFS=',' read -ra DIRS_TO_BACKUP <<<"$1"
+      IFS=',' read -ra DIRS_TO_BACKUP <<<"$2"
       ;;
     --exclude)
-      shift
-      IFS=',' read -ra EXCLUDE_PATTERN <<<"$1"
+      IFS=',' read -ra EXCLUDE_PATTERN <<<"$2"
       ;;
     --compress)
-      shift
-      COMPRESSION_LEVEL="-$1"
+      COMPRESSION_LEVEL="-$2"
       ;;
     --no-notify) NOTIFY=false ;;
     --verbose) VERBOSE=true ;;
-    -h | --help) usage ;;
-    *) [[ -z "${POSITIONAL:-}" ]] && POSITIONAL="$1" || POSITIONAL_2="$1" ;;
+    --*)
+      abort "Unknown option: $1"
+      ;;
+    *)
+      [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+      ;;
     esac
     shift
   done
 
-  [[ -z "$command" ]] && usage
-
-  case "$command" in
-  create) create_backup ;;
-  share) share_backup ;;
+  case "$cmd" in
+  create) cmd_create ;;
+  share) cmd_share ;;
   download)
-    [[ -z "${POSITIONAL:-}" ]] && echo "❌ Missing IP" && usage
-    download_backup "$POSITIONAL"
+    [[ -z "${POSITIONAL:-}" ]] && info "Missing IP" && show_help
+    cmd_download "$POSITIONAL"
     ;;
   restore)
-    [[ -z "${POSITIONAL:-}" ]] && echo "❌ Missing file name" && usage
-    restore_backup "$POSITIONAL"
+    [[ -z "${POSITIONAL:-}" ]] && info "Missing file name" && show_help
+    cmd_restore "$POSITIONAL"
     ;;
-  list) list_backups ;;
+  list) cmd_list ;;
+  help | "")
+    show_help
+    ;;
+  version)
+    cmd_version
+    ;;
   *)
-    echo "Unknown command: $command"
-    usage
+    abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
     ;;
   esac
 }

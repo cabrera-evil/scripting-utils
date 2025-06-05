@@ -1,39 +1,50 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-print_help() {
-  cat <<EOF
-Usage:
-  $0 <command> [options]
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
 
-Commands:
-  commit              Commit and push immediately
-  schedule            Schedule commit via cron
-
-Options:
-  --repo <PATH>       Path to the Git repository (required)
-  --message <MSG>     Commit message (required)
-  --time <HH:MM>      Time to schedule (24h format, required for schedule)
-  --date <DATE>       Date (today, tomorrow, or YYYY-MM-DD; default: tomorrow)
-  -h, --help          Show this help message
-EOF
+# ===================================
+# UTILITIES
+# ===================================
+abort() {
+  echo "ERROR: $1" >&2
   exit 1
 }
 
+info() {
+  echo "INFO: $1"
+}
+
+success() {
+  echo "SUCCESS: $1"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
+# ===================================
+# COMMANDS
+# ===================================
 commit_and_push() {
   local repo_path="$1"
   local message="$2"
+  [[ -z "$repo_path" || -z "$message" ]] && abort "--repo and --message are required"
 
   [[ ! -d "$repo_path/.git" ]] && {
-    echo "❌ Error: Not a valid Git repository: $repo_path"
-    exit 1
+    abort "Error: Not a valid Git repository: $repo_path"
   }
 
   git -C "$repo_path" add .
   git -C "$repo_path" commit -m "$message"
   git -C "$repo_path" push
-  echo "✅ Commit and push completed at \$(date '+%F %T')"
+  success "Commit and push completed at \$(date '+%F %T')"
 }
 
 schedule_commit() {
@@ -43,18 +54,15 @@ schedule_commit() {
   [[ "$date" == "tomorrow" || -z "$date" ]] && date=$(date -d tomorrow +%F)
 
   [[ ! "$time" =~ ^[0-9]{2}:[0-9]{2}$ ]] && {
-    echo "❌ Invalid time format. Use HH:MM."
-    exit 1
+    abort "Invalid time format. Use HH:MM."
   }
 
   [[ ! "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && {
-    echo "❌ Invalid date format. Use today, tomorrow, or YYYY-MM-DD."
-    exit 1
+    abort "Invalid date format. Use today, tomorrow, or YYYY-MM-DD."
   }
 
   [[ ! -d "$repo/.git" ]] && {
-    echo "❌ Not a valid Git repository: $repo"
-    exit 1
+    abort "Not a valid Git repository: $repo"
   }
 
   local hour="${time%%:*}"
@@ -69,7 +77,39 @@ schedule_commit() {
     echo "$minute $hour $day $month * \"$script_path\" commit --repo \"$repo\" --message \"$msg\""
   ) | crontab -
 
-  echo "📅 Scheduled commit on $date at $time for repo: $repo"
+  success "Scheduled commit on $date at $time for repo: $repo"
+}
+
+cmd_version() {
+  echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+# ===================================
+# MAIN LOGIC
+# ===================================
+show_help() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  commit              Commit and push immediately
+  schedule            Schedule commit via cron
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --repo <PATH>       Path to the Git repository (required)
+  --message <MSG>     Commit message (required)
+  --time <HH:MM>      Time to schedule (24h format, required for schedule)
+  --date <DATE>       Date (today, tomorrow, or YYYY-MM-DD; default: tomorrow)
+  -h, --help          Show this help message
+
+Examples:
+  $SCRIPT_NAME commit --repo /path/to/repo --message "Your commit message"
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Scheduled commit" --time 14:30 --date today
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Tomorrow's commit" --time 09:00 --date tomorrow
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Specific date commit" --time 10:00 --date 2023-10-15
+EOF
 }
 
 main() {
@@ -83,47 +123,45 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --repo)
-        shift
-        repo="$1"
-        ;;
-      --message)
-        shift
-        message="$1"
-        ;;
-      --time)
-        shift
-        time="$1"
-        ;;
-      --date)
-        shift
-        date="$1"
-        ;;
-      -h|--help)
-        print_help
-        ;;
-      *)
-        echo "Unknown option: $1"
-        print_help
-        ;;
+    --repo)
+      repo="$2"
+      ;;
+    --message)
+      message="$2"
+      ;;
+    --time)
+      time="$2"
+      ;;
+    --date)
+      date="$2"
+      ;;
+    --*)
+      abort "Unknown option: $1"
+      ;;
+    *)
+      [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+      ;;
     esac
     shift
   done
 
-  [[ -z "$repo" || -z "$message" ]] && print_help
-
   case "$cmd" in
-    commit)
-      commit_and_push "$repo" "$message"
-      ;;
-    schedule)
-      [[ -z "$time" ]] && echo "❌ --time is required for schedule" && exit 1
-      schedule_commit "$time" "$date" "$repo" "$message"
-      ;;
-    *)
-      echo "Unknown command: $cmd"
-      print_help
-      ;;
+  commit)
+    commit_and_push "$repo" "$message"
+    ;;
+  schedule)
+    [[ -z "$time" ]] && abort "--time is required for schedule"
+    schedule_commit "$time" "$date" "$repo" "$message"
+    ;;
+  help | "")
+    show_help
+    ;;
+  version)
+    cmd_version
+    ;;
+  *)
+    abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+    ;;
   esac
 }
 

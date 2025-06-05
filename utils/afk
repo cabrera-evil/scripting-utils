@@ -1,32 +1,58 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 set -euo pipefail
 
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
 DEFAULT_INTERVAL=60
 INTERVAL=$DEFAULT_INTERVAL
 INSTALL=true
 
-usage() {
-    echo "Usage: $0 [--interval SECONDS] [--no-install]"
-    echo "  --interval N     Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)"
-    echo "  --no-install     Skip xdotool auto-install check"
+# ===================================
+# UTILITIES
+# ===================================
+abort() {
+    echo "ERROR: $1" >&2
     exit 1
+}
+
+info() {
+    echo "INFO: $1"
+}
+
+success() {
+	echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
 
 check_xdotool() {
     if ! command -v xdotool &>/dev/null; then
         if [[ "$INSTALL" == false ]]; then
-            echo "❌ xdotool not found and --no-install was used."
-            exit 1
+            abort "xdotool not found and --no-install was used."
         fi
-        echo "🔧 Installing xdotool..."
+        info "🔧 Installing xdotool..."
         sudo apt-get update -qq && sudo apt-get install -y xdotool
+        success "xdotool installed successfully."
     fi
 }
 
-keep_awake() {
-    echo "🟢 Keeping system awake. Interval: ${INTERVAL}s"
-    echo "Press Ctrl+C to exit."
+# ===================================
+# COMMANDS
+# ===================================
+cmd_run() {
+    info "Keeping system awake. Interval: ${INTERVAL}s"
+    info "Press Ctrl+C to exit."
 
     while true; do
         eval "$(xdotool getmouselocation --shell 2>/dev/null)"
@@ -37,30 +63,71 @@ keep_awake() {
     done
 }
 
+cmd_version() {
+    echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+# ===================================
+# MAIN LOGIC
+# ===================================
+show_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  run                       Keep the system awake by moving the mouse
+  help                      Show this help message
+  version                   Show script version
+
+Options:
+  --interval SECONDS       Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)
+  --no-install             Skip xdotool auto-install check
+
+Examples:
+  $SCRIPT_NAME run --interval 30
+  $SCRIPT_NAME version
+  $SCRIPT_NAME help
+EOF
+}
+
 main() {
-    # Parse CLI args
+    local cmd="${1:-}"
+    shift || true
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
         --interval)
-            shift && INTERVAL="$1"
-            [[ ! "$INTERVAL" =~ ^[0-9]+$ ]] && echo "Invalid interval: $INTERVAL" && usage
+            [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]] && abort "Invalid or missing value for --interval"
+            INTERVAL="$2"
             ;;
         --no-install)
             INSTALL=false
             ;;
-        -h | --help)
-            usage
+        --*)
+            abort "Unknown option: $1"
             ;;
         *)
-            echo "Unknown option: $1"
-            usage
+            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
             ;;
         esac
         shift
     done
 
-    check_xdotool
-    keep_awake
+    case "$cmd" in
+    run)
+        check_xdotool
+        cmd_run
+        ;;
+    help | "")
+        show_help
+        ;;
+    version)
+        cmd_version
+        ;;
+    *)
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+        ;;
+    esac
 }
 
 main "$@"

@@ -1,40 +1,44 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# =============================
-# Error handling
-# =============================
-handle_error() {
-    local exit_code=$1
-    echo "❌ Error occurred (exit code $exit_code) during: ${BASH_COMMAND}" >&2
-    exit "$exit_code"
-}
-trap 'handle_error $?' ERR
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
 
-# =============================
-# Helpers
-# =============================
-usage() {
-    cat <<EOF
-Usage: $0 <command> [options]
+# ===================================
+# UTILITIES
+# ===================================
 
-Commands:
-  copy                  Encode a file to Base64 and copy it to clipboard
-
-Options:
-  --file <FILE>         File to encode (required)
-  -h, --help            Show this help message
-EOF
+abort() {
+    echo "ERROR: $1" >&2
     exit 1
 }
+
+info() {
+    echo "INFO: $1"
+}
+
+success() {
+	echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+}
+
+# ===================================
+# COMMANDS
+# ===================================
 
 copy_file_to_clipboard() {
     local file="$1"
 
     [[ ! -f "$file" ]] && {
-        echo "❌ File not found: $file" >&2
-        exit 1
+        abort "File not found: $file" >&2
     }
 
     local encoded
@@ -42,19 +46,40 @@ copy_file_to_clipboard() {
 
     if command -v xclip &>/dev/null; then
         echo "$encoded" | xclip -selection clipboard
-        echo "📋 Copied to clipboard via xclip"
+        success "Copied to clipboard via xclip"
     elif command -v pbcopy &>/dev/null; then
         echo "$encoded" | pbcopy
-        echo "📋 Copied to clipboard via pbcopy"
+        success "Copied to clipboard via pbcopy"
     else
-        echo "❌ No clipboard utility found. Install xclip or pbcopy." >&2
-        exit 1
+        abort "No clipboard utility found. Install xclip or pbcopy."
     fi
 }
 
-# =============================
-# CLI Entry Point
-# =============================
+cmd_version() {
+    echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+# ===================================
+# MAIN LOGIC
+# ===================================
+
+show_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  copy                  Encode a file to Base64 and copy it to clipboard
+  help                  Show this help message
+  version               Show script version
+
+Options:
+  --file <FILE>         File to encode (required)
+
+Examples:
+  $SCRIPT_NAME copy --file /path/to/file.txt
+EOF
+}
+
 main() {
     local cmd="${1:-}"
     shift || true
@@ -64,14 +89,13 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
         --file)
-            shift && FILE_PATH="$1"
+            FILE_PATH="$2"
             ;;
-        -h | --help)
-            usage
+        --*)
+            abort "Unknown option: $1"
             ;;
         *)
-            echo "Unknown option: $1" >&2
-            usage
+            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
             ;;
         esac
         shift
@@ -80,14 +104,18 @@ main() {
     case "$cmd" in
     copy)
         [[ -z "$FILE_PATH" ]] && {
-            echo "❌ --file is required for 'copy'" >&2
-            usage
+            abort "--file is required"
         }
         copy_file_to_clipboard "$FILE_PATH"
         ;;
+    help | "")
+        show_help
+        ;;
+    version)
+        cmd_version
+        ;;
     *)
-        echo "Unknown command: $cmd" >&2
-        usage
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
         ;;
     esac
 }

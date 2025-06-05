@@ -1,61 +1,38 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# -------------------------
-# Defaults
-# -------------------------
+# ===================================
+# GLOBAL CONFIGURATION
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+DEBUG=false
+SILENT=false
+
+# ===================================
+# DEFAULT CONFIGURATION
+# ===================================
 WG_CONF_DIR="/etc/wireguard"
 WG_CMD="wg-quick"
 
-# -------------------------
-# Helper Functions
-# -------------------------
-function usage() {
-    cat <<EOF
-Usage: $(basename "$0") [command] [options]
-
-Commands:
-  list                List available WireGuard interfaces
-  on                  Bring up an interface (interactive or specify)
-  off                Bring down an interface (interactive or specify)
-  help                Show this help message
-
-Options:
-  -i, --interface     Specify interface (e.g., wg0)
-
-Examples:
-  $0 list
-  $0 on --interface wg0
-  $0 off              # Interactive with fzf
-EOF
+# ===================================
+# UTILITIES
+# ===================================
+abort() {
+    echo "ERROR: $1" >&2
+    exit 1
 }
 
-function parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        -i | --interface)
-            INTERFACE="$2"
-            shift
-            ;;
-        list | on | off | help)
-            COMMAND="$1"
-            ;;
-        *)
-            echo "Unknown option: $1"
-            usage
-            exit 1
-            ;;
-        esac
-        shift
-    done
+info() {
+    echo "INFO: $1"
 }
 
-function require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || {
-        echo "❌ '$1' is not installed."
-        exit 1
-    }
+success() {
+    echo "SUCCESS: $1"
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
 
 function list_interfaces() {
@@ -66,17 +43,16 @@ function select_interface() {
     local interfaces
     interfaces=$(list_interfaces)
     if [[ -z "$interfaces" ]]; then
-        echo "❌ No WireGuard interfaces found in $WG_CONF_DIR"
-        exit 1
+        abort "No WireGuard interfaces found in $WG_CONF_DIR"
     fi
     echo "$interfaces" | fzf --prompt="Select WireGuard interface: " --height=10 --border
 }
 
-# -------------------------
-# Commands
-# -------------------------
+# ===================================
+# COMMANDS
+# ===================================
 function cmd_list() {
-    echo "📋 Available WireGuard interfaces:"
+    info "Available WireGuard interfaces:"
     list_interfaces || echo "None found."
 }
 
@@ -84,30 +60,76 @@ function cmd_up() {
     local iface="${INTERFACE:-}"
     [[ -z "$iface" ]] && iface=$(select_interface)
     sudo $WG_CMD up "$iface"
-    echo "✅ Interface '$iface' is up."
+    success "Interface '$iface' is up."
 }
 
 function cmd_down() {
     local iface="${INTERFACE:-}"
     [[ -z "$iface" ]] && iface=$(select_interface)
     sudo $WG_CMD down "$iface"
-    echo "✅ Interface '$iface' is down."
+    success "Interface '$iface' is down."
 }
 
-# -------------------------
-# Main
-# -------------------------
-require_cmd "$WG_CMD"
-require_cmd "fzf"
+# ===================================
+# MAIN LOGIC
+# ===================================
+function show_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
 
-COMMAND="${1:-help}"
-shift || true
+Commands:
+  list                List available WireGuard interfaces
+  on                  Bring up an interface (interactive or specify)
+  off                 Bring down an interface (interactive or specify)
+  help                Show this help message
+  version             Show script version
 
-parse_args "$@"
+Options:
+  -i, --interface     Specify interface (e.g., wg0)
 
-case "$COMMAND" in
-list) cmd_list ;;
-on) cmd_up ;;
-off) cmd_down ;;
-help | *) usage ;;
-esac
+Examples:
+  $SCRIPT_NAME list
+  $SCRIPT_NAME on --interface wg0
+  $SCRIPT_NAME off
+EOF
+}
+
+main() {
+    require_cmd "$WG_CMD"
+    require_cmd "fzf"
+
+    local cmd="${1:-}"
+    shift || true
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -i | --interface)
+            INTERFACE="$2"
+            ;;
+        --*)
+            abort "Unknown option: $1"
+            ;;
+        *)
+            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+            ;;
+        esac
+        shift
+    done
+
+    case "$cmd" in
+    list) cmd_list ;;
+    on) cmd_up ;;
+    off) cmd_down ;;
+    help | "")
+        show_help
+        ;;
+    version)
+        cmd_version
+        ;;
+    *)
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+        ;;
+    esac
+}
+
+main "$@"
