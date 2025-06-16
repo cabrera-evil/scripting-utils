@@ -17,7 +17,7 @@ ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
 SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
 S3_PATH="hub"
-LOCAL_DIR="."
+LOCAL_DIR="$(pwd)"
 CLONED_DIR="./infra"
 
 # ========================
@@ -49,16 +49,16 @@ build_aws_opts() {
 
 detect_s3_subpath() {
 	local abs_dir rel_key match_path
-	abs_dir=$(realpath "$LOCAL_DIR")
+	abs_dir=$(realpath "$LOCAL_DIR" | sed "s|/infra/|/hub/|")
 	match_path=""
 	while IFS= read -r key; do
 		rel_key=$(dirname "$key")
-		[[ -z "$rel_key" || "$rel_key" == "." ]] && continue
 		[[ "$abs_dir" == */"$rel_key" ]] && {
 			match_path="$rel_key"
 			break
 		}
 	done < <(aws s3 ls "s3://$BUCKET/$S3_PATH/" --recursive "${AWS_OPTS[@]}" | awk '{print $4}')
+	[[ "$match_path" == "$S3_PATH"* ]] && match_path="${match_path#${S3_PATH%/}/}"
 	echo "${match_path:-}"
 }
 
