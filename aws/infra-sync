@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ========================
+# GLOBAL CONFIGURATION
+# ========================
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="1.0.0"
+
+# ========================
+# DEFAULT CONFIGURATION
+# ========================
+BUCKET="hub-config-20250105173935589100000001"
+REGION="${AWS_REGION:-ca-central-1}"
+PROFILE="${AWS_PROFILE:-default}"
+ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
+SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+
+S3_PATH="hub/"
+LOCAL_DIR=""
+
+# ========================
+# UTILITIES
+# ========================
+abort() {
+	echo "ERROR: $1" >&2
+	exit 1
+}
+
+info() {
+	echo "INFO: $1"
+}
+
+success() {
+	echo "SUCCESS: $1"
+}
+
+build_aws_opts() {
+	AWS_OPTS=(--region "$REGION")
+	if [[ -n "$ACCESS_KEY" && -n "$SECRET_KEY" ]]; then
+		export AWS_ACCESS_KEY_ID="$ACCESS_KEY"
+		export AWS_SECRET_ACCESS_KEY="$SECRET_KEY"
+		[[ -n "$SESSION_TOKEN" ]] && export AWS_SESSION_TOKEN="$SESSION_TOKEN"
+	else
+		AWS_OPTS+=(--profile "$PROFILE")
+	fi
+}
+
+# ========================
+# COMMANDS
+# ========================
+cmd_ls() {
+	aws s3 ls "s3://$BUCKET/$S3_PATH" "${AWS_OPTS[@]}"
+}
+
+cmd_pull() {
+	[[ -z "$LOCAL_DIR" ]] && LOCAL_DIR="./infra"
+	aws s3 sync "s3://$BUCKET/$S3_PATH" "$LOCAL_DIR" "${AWS_OPTS[@]}"
+	success "Downloaded s3://$BUCKET/$S3_PATH → $LOCAL_DIR"
+}
+
+cmd_push() {
+	[[ -z "$LOCAL_DIR" ]] && LOCAL_DIR="."
+	[[ ! -d "$LOCAL_DIR" ]] && abort "--dir '$LOCAL_DIR' does not exist"
+
+	local abs_dir rel_key match_path
+	abs_dir=$(realpath "$LOCAL_DIR")
+
+	info "Scanning S3 under s3://$BUCKET/$S3_PATH..."
+	match_path=""
+	while IFS= read -r key; do
+		rel_key=$(dirname "$key")
+		[[ -z "$rel_key" || "$rel_key" == "." ]] && continue
+		[[ "$abs_dir" == */"$rel_key" ]] && {
+			match_path="$rel_key"
+			break
+		}
+	done < <(aws s3 ls "s3://$BUCKET/$S3_PATH" --recursive "${AWS_OPTS[@]}" | awk '{print $4}')
+
+	local target_path="${S3_PATH%/}/"
+	target_path+="${match_path:-$(basename "$abs_dir")}"
+
+	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$target_path" "${AWS_OPTS[@]}"
+	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$target_path"
+}
+
+cmd_version() {
+	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+show_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  ls                    List contents in s3://$BUCKET/$S3_PATH
+  pull                  Download from S3 to local directory
+  push                  Upload from local directory to S3
+  version               Show script version
+  help                  Show help
+
+Options:
+  --dir <local_dir>       Local directory for pull/push (required for push)
+  --region <region>       AWS region (default: $REGION)
+  --profile <name>        AWS profile (default: $PROFILE)
+  --access-key <key>      AWS access key ID
+  --secret-key <key>      AWS secret access key
+  --session-token <tok>   AWS session token (if temporary credentials)
+
+Examples:
+  $SCRIPT_NAME ls 
+  $SCRIPT_NAME pull --dir ./infra
+  $SCRIPT_NAME push --dir ./infra
+EOF
+}
+
+# ========================
+# MAIN
+# ========================
+main() {
+	local cmd="${1:-}"
+	shift || true
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--dir)
+			LOCAL_DIR="$2"
+			shift
+			;;
+		--region)
+			REGION="$2"
+			shift
+			;;
+		--profile)
+			PROFILE="$2"
+			shift
+			;;
+		--access-key)
+			ACCESS_KEY="$2"
+			shift
+			;;
+		--secret-key)
+			SECRET_KEY="$2"
+			shift
+			;;
+		--session-token)
+			SESSION_TOKEN="$2"
+			shift
+			;;
+		--*)
+			abort "Unknown option: $1"
+			;;
+		*)
+			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			;;
+		esac
+		shift
+	done
+
+	build_aws_opts
+
+	case "$cmd" in
+	ls) cmd_ls ;;
+	pull) cmd_pull ;;
+	push) cmd_push ;;
+	help | "") show_help ;;
+	version) cmd_version ;;
+	*) abort "Unknown command: $cmd" ;;
+	esac
+}
+
+main "$@"
