@@ -16,7 +16,7 @@ PROFILE="${AWS_PROFILE:-default}"
 ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
 SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
-S3_PATH="hub/"
+S3_PATH="hub"
 LOCAL_DIR="."
 CLONED_DIR="./infra"
 
@@ -47,28 +47,9 @@ build_aws_opts() {
 	fi
 }
 
-# ========================
-# COMMANDS
-# ========================
-cmd_ls() {
-	aws s3 ls "s3://$BUCKET/$S3_PATH" "${AWS_OPTS[@]}"
-}
-
-cmd_clone() {
-	aws s3 sync "s3://$BUCKET/$S3_PATH" "$CLONED_DIR" "${AWS_OPTS[@]}"
-	success "Cloned s3://$BUCKET/$S3_PATH → $CLONED_DIR"
-}
-
-cmd_pull() {
-	aws s3 sync "s3://$BUCKET/$S3_PATH" "$LOCAL_DIR" "${AWS_OPTS[@]}"
-	success "Downloaded s3://$BUCKET/$S3_PATH → $LOCAL_DIR"
-}
-
-cmd_push() {
+detect_s3_subpath() {
 	local abs_dir rel_key match_path
 	abs_dir=$(realpath "$LOCAL_DIR")
-
-	info "Scanning S3 under s3://$BUCKET/$S3_PATH..."
 	match_path=""
 	while IFS= read -r key; do
 		rel_key=$(dirname "$key")
@@ -77,13 +58,32 @@ cmd_push() {
 			match_path="$rel_key"
 			break
 		}
-	done < <(aws s3 ls "s3://$BUCKET/$S3_PATH" --recursive "${AWS_OPTS[@]}" | awk '{print $4}')
+	done < <(aws s3 ls "s3://$BUCKET/$S3_PATH/" --recursive "${AWS_OPTS[@]}" | awk '{print $4}')
+	echo "${match_path:-$(basename "$abs_dir")}"
+}
 
-	local target_path="${S3_PATH%/}/"
-	target_path+="${match_path:-$(basename "$abs_dir")}"
+# ========================
+# COMMANDS
+# ========================
+cmd_ls() {
+	aws s3 ls "s3://$BUCKET/$S3_PATH/" "${AWS_OPTS[@]}"
+}
 
-	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$target_path" "${AWS_OPTS[@]}"
-	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$target_path"
+cmd_clone() {
+	aws s3 sync "s3://$BUCKET/$S3_PATH/" "$CLONED_DIR" "${AWS_OPTS[@]}"
+	success "Cloned s3://$BUCKET/$S3_PATH → $CLONED_DIR"
+}
+
+cmd_pull() {
+	target_path=$(detect_s3_subpath)
+	aws s3 sync "s3://$BUCKET/$S3_PATH/$target_path" "$LOCAL_DIR" "${AWS_OPTS[@]}"
+	success "Downloaded s3://$BUCKET/$S3_PATH/$target_path → $LOCAL_DIR"
+}
+
+cmd_push() {
+	target_path=$(detect_s3_subpath)
+	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$S3_PATH/$target_path" "${AWS_OPTS[@]}"
+	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$S3_PATH/$target_path"
 }
 
 cmd_version() {
