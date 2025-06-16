@@ -16,9 +16,9 @@ PROFILE="${AWS_PROFILE:-default}"
 ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
 SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
-
 S3_PATH="hub/"
-LOCAL_DIR=""
+LOCAL_DIR="."
+CLONED_DIR="./infra"
 
 # ========================
 # UTILITIES
@@ -54,16 +54,17 @@ cmd_ls() {
 	aws s3 ls "s3://$BUCKET/$S3_PATH" "${AWS_OPTS[@]}"
 }
 
+cmd_clone() {
+	aws s3 sync "s3://$BUCKET/$S3_PATH" "$CLONED_DIR" "${AWS_OPTS[@]}"
+	success "Cloned s3://$BUCKET/$S3_PATH → $CLONED_DIR"
+}
+
 cmd_pull() {
-	[[ -z "$LOCAL_DIR" ]] && LOCAL_DIR="./infra"
 	aws s3 sync "s3://$BUCKET/$S3_PATH" "$LOCAL_DIR" "${AWS_OPTS[@]}"
 	success "Downloaded s3://$BUCKET/$S3_PATH → $LOCAL_DIR"
 }
 
 cmd_push() {
-	[[ -z "$LOCAL_DIR" ]] && LOCAL_DIR="."
-	[[ ! -d "$LOCAL_DIR" ]] && abort "--dir '$LOCAL_DIR' does not exist"
-
 	local abs_dir rel_key match_path
 	abs_dir=$(realpath "$LOCAL_DIR")
 
@@ -95,13 +96,13 @@ Usage: $SCRIPT_NAME <command> [options]
 
 Commands:
   ls                    List contents in s3://$BUCKET/$S3_PATH
+  clone                 Clone s3://$BUCKET/$S3_PATH to $CLONED_DIR
   pull                  Download from S3 to local directory
   push                  Upload from local directory to S3
   version               Show script version
   help                  Show help
 
 Options:
-  --dir <local_dir>       Local directory for pull/push (required for push)
   --region <region>       AWS region (default: $REGION)
   --profile <name>        AWS profile (default: $PROFILE)
   --access-key <key>      AWS access key ID
@@ -109,9 +110,10 @@ Options:
   --session-token <tok>   AWS session token (if temporary credentials)
 
 Examples:
-  $SCRIPT_NAME ls 
-  $SCRIPT_NAME pull --dir ./infra
-  $SCRIPT_NAME push --dir ./infra
+  $SCRIPT_NAME ls --region us-west-2
+  $SCRIPT_NAME clone --profile myprofile
+  $SCRIPT_NAME pull --access-key myaccesskey --secret-key
+  $SCRIPT_NAME push --session-token mysessiontoken
 EOF
 }
 
@@ -124,10 +126,6 @@ main() {
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--dir)
-			LOCAL_DIR="$2"
-			shift
-			;;
 		--region)
 			REGION="$2"
 			shift
@@ -162,6 +160,7 @@ main() {
 
 	case "$cmd" in
 	ls) cmd_ls ;;
+	clone) cmd_clone ;;
 	pull) cmd_pull ;;
 	push) cmd_push ;;
 	help | "") show_help ;;
