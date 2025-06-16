@@ -59,7 +59,7 @@ detect_s3_subpath() {
 			break
 		}
 	done < <(aws s3 ls "s3://$BUCKET/$S3_PATH/" --recursive "${AWS_OPTS[@]}" | awk '{print $4}')
-	echo "${match_path:-$(basename "$abs_dir")}"
+	echo "${match_path:-}"
 }
 
 # ========================
@@ -75,15 +75,15 @@ cmd_clone() {
 }
 
 cmd_pull() {
-	target_path=$(detect_s3_subpath)
-	aws s3 sync "s3://$BUCKET/$S3_PATH/$target_path" "$LOCAL_DIR" "${AWS_OPTS[@]}"
-	success "Downloaded s3://$BUCKET/$S3_PATH/$target_path → $LOCAL_DIR"
+	sub_path=$(detect_s3_subpath)
+	aws s3 sync "s3://$BUCKET/$S3_PATH/$sub_path" "$LOCAL_DIR" "${AWS_OPTS[@]}"
+	success "Downloaded s3://$BUCKET/$S3_PATH/$sub_path → $LOCAL_DIR"
 }
 
 cmd_push() {
-	target_path=$(detect_s3_subpath)
-	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$S3_PATH/$target_path" "${AWS_OPTS[@]}"
-	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$S3_PATH/$target_path"
+	sub_path=$(detect_s3_subpath)
+	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$S3_PATH/$sub_path" "${AWS_OPTS[@]}"
+	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$S3_PATH/$sub_path"
 }
 
 cmd_version() {
