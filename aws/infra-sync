@@ -28,12 +28,18 @@ abort() {
 	exit 1
 }
 
-info() {
+log() {
 	echo "INFO: $1"
 }
 
 success() {
 	echo "SUCCESS: $1"
+}
+
+confirm_action() {
+	echo "${1}"
+	read -r -p "Continue? [y/N]: " confirm
+	[[ "$confirm" == "y" || "$confirm" == "Y" ]]
 }
 
 build_aws_opts() {
@@ -81,7 +87,15 @@ cmd_pull() {
 }
 
 cmd_push() {
+	local sub_path
 	sub_path=$(detect_s3_subpath)
+	if ! confirm_action """
+    You are about to upload local files to S3
+    Source: $LOCAL_DIR
+    Target: s3://$BUCKET/$S3_PATH/$sub_path
+  """; then
+		abort "Push operation cancelled."
+	fi
 	aws s3 sync "$LOCAL_DIR" "s3://$BUCKET/$S3_PATH/$sub_path" "${AWS_OPTS[@]}"
 	success "Uploaded $LOCAL_DIR → s3://$BUCKET/$S3_PATH/$sub_path"
 }
