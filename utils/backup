@@ -66,12 +66,18 @@ require_cmd() {
 }
 
 notify() {
+	if [ ! command -v dunstify ] >/dev/null 2>&1; then
+		return
+	fi
 	$NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
 }
 
 notify_progress() {
 	local percent="$1"
 	local message="$2"
+	if [ ! command -v dunstify ] >/dev/null 2>&1; then
+		return
+	fi
 	$NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
 }
 
