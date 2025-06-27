@@ -66,18 +66,12 @@ require_cmd() {
 }
 
 notify() {
-	if [ ! command -v dunstify ] >/dev/null 2>&1; then
-		return
-	fi
 	$NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
 }
 
 notify_progress() {
 	local percent="$1"
 	local message="$2"
-	if [ ! command -v dunstify ] >/dev/null 2>&1; then
-		return
-	fi
 	$NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
 }
 
@@ -87,25 +81,22 @@ notify_progress() {
 
 cmd_create() {
 	mkdir -p "$BACKUP_DIR"
-	local filename="${OUTPUT_NAME:-bk-$(date +%Y-%m-%d).zip}"
+	local filename="${OUTPUT_NAME:-backup-$(date +%Y%m%d%H%M%S).zip}"
 	local path="$BACKUP_DIR/$filename"
-
 	info "Creating: $path"
 	notify "Creating backup..."
-
-	# Collect file list
 	local tmp_list
 	tmp_list=$(mktemp)
 	for dir in "${DIRS_TO_BACKUP[@]}"; do
-		[[ -d "$dir" ]] && find "$dir" -type f >>"$tmp_list"
+		if [[ -d "$dir" ]]; then
+			find "$dir" -type f | sed "s|^$HOME/||" >>"$tmp_list"
+		fi
 	done
-
-	# Build args
+	pushd "$HOME" >/dev/null
 	local zip_args=(-r "$COMPRESSION_LEVEL" "$path" -@)
 	for pattern in "${EXCLUDE_PATTERN[@]}"; do
 		zip_args+=(-x "$pattern")
 	done
-
 	if $VERBOSE; then
 		zip -v "${zip_args[@]}" <"$tmp_list"
 	else
@@ -114,7 +105,6 @@ cmd_create() {
 			rm -f "$tmp_list"
 		) &
 		local zip_pid=$!
-
 		local percent=0 step=3
 		while kill -0 "$zip_pid" 2>/dev/null; do
 			sleep 1
@@ -122,20 +112,43 @@ cmd_create() {
 			[[ $percent -gt 99 ]] && percent=99
 			notify_progress "$percent" "Creating backup: $filename ($percent%)"
 		done
-
 		wait "$zip_pid"
 	fi
-
 	rm -f "$tmp_list"
+	popd >/dev/null
 	notify_progress 100 "Backup complete: $filename"
 	notify "Backup complete: $filename"
 	success "Backup ready: $path"
 }
 
 cmd_share() {
-	local ip=$(hostname -I | awk '{print $1}')
-	info "Serving: http://$ip:$PORT"
-	cd "$BACKUP_DIR"
+	require_cmd python3
+	require_cmd ln
+	[[ ! -d "$BACKUP_DIR" ]] && abort "Backup directory not found: $BACKUP_DIR"
+	local latest_zip
+	latest_zip=$(ls -1t "$BACKUP_DIR"/backup-*.zip 2>/dev/null | head -n 1)
+	[[ -z "$latest_zip" ]] && abort "No backup files to share."
+	local filename
+	filename=$(basename "$latest_zip")
+	local share_dir="$TMP_DIR/backup_share"
+	rm -rf "$share_dir" && mkdir -p "$share_dir"
+	ln -s "$latest_zip" "$share_dir/$filename"
+	cat <<EOF >"$share_dir/index.html"
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="refresh" content="0; url=$filename" />
+  </head>
+  <body>
+    <p>Redirecting to download <a href="$filename">$filename</a>...</p>
+  </body>
+</html>
+EOF
+	local ip
+	ip=$(hostname -I | awk '{print $1}')
+	info "Serving backup at: http://$ip:$PORT/"
+	notify "Sharing: $filename"
+	cd "$share_dir"
 	python3 -m http.server "$PORT" >/dev/null 2>&1
 }
 
@@ -144,18 +157,14 @@ cmd_restore() {
 	[[ ! -f "$file" ]] && {
 		abort "File not found: $file"
 	}
-
 	notify "Restoring from $file"
 	unzip "$file" -d "$TMP_DIR"
-
-	local source="${TMP_DIR}/home/$USER"
+	local source="$TMP_DIR"
 	local total=$(find "$source" -type f 2>/dev/null | wc -l)
 	[[ "$total" -eq 0 ]] && total=100
 	local count=0
 	local prev_percent=0
-
 	notify_progress 0 "Restoring from $file (0%)"
-
 	rsync -av --info=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
 		if [[ "$line" =~ to-check ]]; then
 			((count++))
@@ -167,7 +176,6 @@ cmd_restore() {
 			fi
 		fi
 	done
-
 	notify_progress 100 "Restore complete"
 	notify "Restore complete: $file"
 	success "Restore complete: $file"
@@ -175,15 +183,12 @@ cmd_restore() {
 
 cmd_download() {
 	local ip="$1"
-	local zip="${ZIP_NAME:-bk-$(date +%Y-%m-%d).zip}"
-	local url="http://$ip:$PORT/$zip"
-	local out_path="$TMP_DIR/$zip"
-
+	local url="http://$ip:$PORT"
+	local out_path="$TMP_DIR"
 	info "⬇Downloading from: $url"
 	wget -q -O "$out_path" "$url" || {
 		abort "Download failed"
 	}
-
 	cmd_restore "$out_path"
 }
 
