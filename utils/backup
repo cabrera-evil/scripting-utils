@@ -23,24 +23,25 @@ OUTPUT_NAME=""
 ZIP_NAME=""
 DUNST_ID=91190
 DIRS_TO_BACKUP=(
-  "$HOME/.ssh"
-  "$HOME/git"
-  "$HOME/npm"
-  "$HOME/work"
-  "$HOME/server"
-  "$HOME/Documents"
-  "$HOME/Pictures"
+	"$HOME/artifacts"
+	"$HOME/dockerhub"
+	"$HOME/Documents"
+	"$HOME/git"
+	"$HOME/npm"
+	"$HOME/Pictures"
+	"$HOME/server"
+	"$HOME/work"
 )
 EXCLUDE_PATTERN=(
-  "*/node_modules/*"
-  "*/dist/*"
-  "*/build/*"
-  "*/.next/*"
-  "*/.pnpm/*"
-  "*.zip"
-  "*.tar.gz"
-  "*.log"
-  "*.tmp"
+	"*/node_modules/*"
+	"*/dist/*"
+	"*/build/*"
+	"*/.next/*"
+	"*/.pnpm/*"
+	"*.zip"
+	"*.tar.gz"
+	"*.log"
+	"*.tmp"
 )
 
 # ===================================
@@ -48,30 +49,30 @@ EXCLUDE_PATTERN=(
 # ===================================
 
 abort() {
-  echo "ERROR: $1" >&2
-  exit 1
+	echo "ERROR: $1" >&2
+	exit 1
 }
 
 info() {
-  echo "INFO: $1"
+	echo "INFO: $1"
 }
 
 success() {
-  echo "SUCCESS: $1"
+	echo "SUCCESS: $1"
 }
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
 }
 
 notify() {
-  $NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
+	$NOTIFY && dunstify "Backup" "$1" -r $DUNST_ID || true
 }
 
 notify_progress() {
-  local percent="$1"
-  local message="$2"
-  $NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
+	local percent="$1"
+	local message="$2"
+	$NOTIFY && dunstify "Backup Progress" "$message" -h int:value:$percent -r $DUNST_ID || true
 }
 
 # ===================================
@@ -79,114 +80,114 @@ notify_progress() {
 # ===================================
 
 cmd_create() {
-  mkdir -p "$BACKUP_DIR"
-  local filename="${OUTPUT_NAME:-bk-$(date +%Y-%m-%d).zip}"
-  local path="$BACKUP_DIR/$filename"
+	mkdir -p "$BACKUP_DIR"
+	local filename="${OUTPUT_NAME:-bk-$(date +%Y-%m-%d).zip}"
+	local path="$BACKUP_DIR/$filename"
 
-  info "Creating: $path"
-  notify "Creating backup..."
+	info "Creating: $path"
+	notify "Creating backup..."
 
-  # Collect file list
-  local tmp_list
-  tmp_list=$(mktemp)
-  for dir in "${DIRS_TO_BACKUP[@]}"; do
-    [[ -d "$dir" ]] && find "$dir" -type f >>"$tmp_list"
-  done
+	# Collect file list
+	local tmp_list
+	tmp_list=$(mktemp)
+	for dir in "${DIRS_TO_BACKUP[@]}"; do
+		[[ -d "$dir" ]] && find "$dir" -type f >>"$tmp_list"
+	done
 
-  # Build args
-  local zip_args=(-r "$COMPRESSION_LEVEL" "$path" -@)
-  for pattern in "${EXCLUDE_PATTERN[@]}"; do
-    zip_args+=(-x "$pattern")
-  done
+	# Build args
+	local zip_args=(-r "$COMPRESSION_LEVEL" "$path" -@)
+	for pattern in "${EXCLUDE_PATTERN[@]}"; do
+		zip_args+=(-x "$pattern")
+	done
 
-  if $VERBOSE; then
-    zip -v "${zip_args[@]}" <"$tmp_list"
-  else
-    (
-      zip "${zip_args[@]}" <"$tmp_list" >/dev/null 2>&1
-      rm -f "$tmp_list"
-    ) &
-    local zip_pid=$!
+	if $VERBOSE; then
+		zip -v "${zip_args[@]}" <"$tmp_list"
+	else
+		(
+			zip "${zip_args[@]}" <"$tmp_list" >/dev/null 2>&1
+			rm -f "$tmp_list"
+		) &
+		local zip_pid=$!
 
-    local percent=0 step=3
-    while kill -0 "$zip_pid" 2>/dev/null; do
-      sleep 1
-      percent=$((percent + step))
-      [[ $percent -gt 99 ]] && percent=99
-      notify_progress "$percent" "Creating backup: $filename ($percent%)"
-    done
+		local percent=0 step=3
+		while kill -0 "$zip_pid" 2>/dev/null; do
+			sleep 1
+			percent=$((percent + step))
+			[[ $percent -gt 99 ]] && percent=99
+			notify_progress "$percent" "Creating backup: $filename ($percent%)"
+		done
 
-    wait "$zip_pid"
-  fi
+		wait "$zip_pid"
+	fi
 
-  rm -f "$tmp_list"
-  notify_progress 100 "Backup complete: $filename"
-  notify "Backup complete: $filename"
-  success "Backup ready: $path"
+	rm -f "$tmp_list"
+	notify_progress 100 "Backup complete: $filename"
+	notify "Backup complete: $filename"
+	success "Backup ready: $path"
 }
 
 cmd_share() {
-  local ip=$(hostname -I | awk '{print $1}')
-  info "Serving: http://$ip:$PORT"
-  cd "$BACKUP_DIR"
-  python3 -m http.server "$PORT" >/dev/null 2>&1
+	local ip=$(hostname -I | awk '{print $1}')
+	info "Serving: http://$ip:$PORT"
+	cd "$BACKUP_DIR"
+	python3 -m http.server "$PORT" >/dev/null 2>&1
 }
 
 cmd_restore() {
-  local file="$1"
-  [[ ! -f "$file" ]] && {
-    abort "File not found: $file"
-  }
+	local file="$1"
+	[[ ! -f "$file" ]] && {
+		abort "File not found: $file"
+	}
 
-  notify "Restoring from $file"
-  unzip "$file" -d "$TMP_DIR"
+	notify "Restoring from $file"
+	unzip "$file" -d "$TMP_DIR"
 
-  local source="${TMP_DIR}/home/$USER"
-  local total=$(find "$source" -type f 2>/dev/null | wc -l)
-  [[ "$total" -eq 0 ]] && total=100
-  local count=0
-  local prev_percent=0
+	local source="${TMP_DIR}/home/$USER"
+	local total=$(find "$source" -type f 2>/dev/null | wc -l)
+	[[ "$total" -eq 0 ]] && total=100
+	local count=0
+	local prev_percent=0
 
-  notify_progress 0 "Restoring from $file (0%)"
+	notify_progress 0 "Restoring from $file (0%)"
 
-  rsync -av --info=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
-    if [[ "$line" =~ to-check ]]; then
-      ((count++))
-      local percent=$((100 * count / total))
-      [[ $percent -gt 100 ]] && percent=100
-      if [[ $percent -ne $prev_percent ]]; then
-        prev_percent=$percent
-        notify_progress "$percent" "Restoring from $file ($percent%)"
-      fi
-    fi
-  done
+	rsync -av --info=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
+		if [[ "$line" =~ to-check ]]; then
+			((count++))
+			local percent=$((100 * count / total))
+			[[ $percent -gt 100 ]] && percent=100
+			if [[ $percent -ne $prev_percent ]]; then
+				prev_percent=$percent
+				notify_progress "$percent" "Restoring from $file ($percent%)"
+			fi
+		fi
+	done
 
-  notify_progress 100 "Restore complete"
-  notify "Restore complete: $file"
-  success "Restore complete: $file"
+	notify_progress 100 "Restore complete"
+	notify "Restore complete: $file"
+	success "Restore complete: $file"
 }
 
 cmd_download() {
-  local ip="$1"
-  local zip="${ZIP_NAME:-bk-$(date +%Y-%m-%d).zip}"
-  local url="http://$ip:$PORT/$zip"
-  local out_path="$TMP_DIR/$zip"
+	local ip="$1"
+	local zip="${ZIP_NAME:-bk-$(date +%Y-%m-%d).zip}"
+	local url="http://$ip:$PORT/$zip"
+	local out_path="$TMP_DIR/$zip"
 
-  info "⬇Downloading from: $url"
-  wget -q -O "$out_path" "$url" || {
-    abort "Download failed"
-  }
+	info "⬇Downloading from: $url"
+	wget -q -O "$out_path" "$url" || {
+		abort "Download failed"
+	}
 
-  cmd_restore "$out_path"
+	cmd_restore "$out_path"
 }
 
 cmd_list() {
-  info "Backups in $BACKUP_DIR:"
-  ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || info "No backups found."
+	info "Backups in $BACKUP_DIR:"
+	ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || info "No backups found."
 }
 
 cmd_version() {
-  echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
 }
 
 # ===================================
@@ -194,22 +195,24 @@ cmd_version() {
 # ===================================
 
 show_help() {
-  cat <<EOF
+	cat <<EOF
 Usage: $SCRIPT_NAME <command> [options]
 
 Commands:
   create              Create a backup
   share               Share latest backup via HTTP
-  download <IP>       Download and restore from remote backup server
-  restore <FILE>      Restore from local .zip backup
+  download            Download and restore from remote backup server
+  restore             Restore from local .zip backup
   list                List local backup files
   help                Show this help message
   version             Show script version
 
 Options:
   --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
+  --file <FILE>       Path to the local zip file to restore from
   --dest <DIR>        Restore destination directory (default: $DESTINATION)
   --tmp <DIR>         Temp working directory (default: $TMP_DIR)
+  --ip                IP address of the remote server to download the backup from
   --port <PORT>       HTTP port to share/download (default: $PORT)
   --output <NAME>     Override output backup file name
   --zip-name <NAME>   Expected zip file to download (default: auto)
@@ -227,87 +230,95 @@ EOF
 }
 
 main() {
-  local cmd="${1:-}"
-  shift || true
+	local cmd="${1:-}"
+	shift || true
 
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --dir)
-      BACKUP_DIR="$2"
-      shift
-      ;;
-    --dest)
-      DESTINATION="$2"
-      shift
-      ;;
-    --tmp)
-      TMP_DIR="$2"
-      shift
-      ;;
-    --port)
-      PORT="$2"
-      shift
-      ;;
-    --output)
-      OUTPUT_NAME="$2"
-      shift
-      ;;
-    --zip-name)
-      ZIP_NAME="$2"
-      shift
-      ;;
-    --dirs)
-      IFS=',' read -ra DIRS_TO_BACKUP <<<"$2"
-      shift
-      ;;
-    --exclude)
-      IFS=',' read -ra EXCLUDE_PATTERN <<<"$2"
-      shift
-      ;;
-    --compress)
-      COMPRESSION_LEVEL="-$2"
-      shift
-      ;;
-    --no-notify)
-      NOTIFY=false
-      shift
-      ;;
-    --verbose)
-      VERBOSE=true
-      shift
-      ;;
-    --*)
-      abort "Unknown option: $1"
-      ;;
-    *)
-      [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
-      ;;
-    esac
-    shift
-  done
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--dir)
+			BACKUP_DIR="$2"
+			shift
+			;;
+		--dest)
+			DESTINATION="$2"
+			shift
+			;;
+		--tmp)
+			TMP_DIR="$2"
+			shift
+			;;
+		--file)
+			ZIP_FILE="$2"
+			shift
+			;;
+		--ip)
+			IP_ADDRESS="$2"
+			shift
+			;;
+		--port)
+			PORT="$2"
+			shift
+			;;
+		--output)
+			OUTPUT_NAME="$2"
+			shift
+			;;
+		--zip-name)
+			ZIP_NAME="$2"
+			shift
+			;;
+		--dirs)
+			IFS=',' read -ra DIRS_TO_BACKUP <<<"$2"
+			shift
+			;;
+		--exclude)
+			IFS=',' read -ra EXCLUDE_PATTERN <<<"$2"
+			shift
+			;;
+		--compress)
+			COMPRESSION_LEVEL="-$2"
+			shift
+			;;
+		--no-notify)
+			NOTIFY=false
+			shift
+			;;
+		--verbose)
+			VERBOSE=true
+			shift
+			;;
+		--*)
+			abort "Unknown option: $1"
+			;;
+		*)
+			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			;;
+		esac
+		shift
+	done
 
-  case "$cmd" in
-  create) cmd_create ;;
-  share) cmd_share ;;
-  download)
-    [[ -z "${POSITIONAL:-}" ]] && info "Missing IP" && show_help
-    cmd_download "$POSITIONAL"
-    ;;
-  restore)
-    [[ -z "${POSITIONAL:-}" ]] && info "Missing file name" && show_help
-    cmd_restore "$POSITIONAL"
-    ;;
-  list) cmd_list ;;
-  help | "")
-    show_help
-    ;;
-  version)
-    cmd_version
-    ;;
-  *)
-    abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
-    ;;
-  esac
+	case "$cmd" in
+	create) cmd_create ;;
+	share) cmd_share ;;
+	download)
+		[[ -z "$IP_ADDRESS" ]] && abort "Missing --ip option for download command"
+		cmd_download "$IP_ADDRESS"
+		;;
+	restore)
+		[[ -z "$ZIP_FILE" ]] && abort "Missing --file option for restore command"
+		cmd_restore "$ZIP_FILE"
+		;;
+	list) cmd_list ;;
+	help | "")
+		show_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		;;
+	esac
 }
 
 main "$@"
