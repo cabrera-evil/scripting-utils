@@ -2,6 +2,16 @@
 set -euo pipefail
 
 # ===================================
+# Colors
+# ===================================
+RED='\e[0;31m'
+GREEN='\e[0;32m'
+YELLOW='\e[1;33m'
+BLUE='\e[0;34m'
+MAGENTA='\e[0;35m'
+NC='\e[0m' # No Color
+
+# ===================================
 # GLOBAL CONFIGURATION
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
@@ -10,32 +20,38 @@ DEBUG=false
 SILENT=false
 
 # ===================================
-# UTILITIES
+# Logging
 # ===================================
-
+log() {
+    if [ "$SILENT" != "true" ]; then
+        echo -e "${BLUE}==> $1${NC}"
+    fi
+}
+warn() {
+    if [ "$SILENT" != "true" ]; then
+        echo -e "${YELLOW}⚠️  $1${NC}" >&2
+    fi
+}
+success() {
+    if [ "$SILENT" != "true" ]; then
+        echo -e "${GREEN}✓ $1${NC}"
+    fi
+}
 abort() {
-    echo "ERROR: $1" >&2
+    if [ "$SILENT" != "true" ]; then
+        echo -e "${RED}✗ $1${NC}" >&2
+    fi
     exit 1
 }
-
-info() {
-    if [[ "$SILENT" == false ]]; then
-        echo "INFO: $1"
-    fi
-}
-
 debug() {
-    if [[ "$DEBUG" == true ]]; then
-        echo "DEBUG: $1"
+    if [ "$DEBUG" = "true" ]; then
+        echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
     fi
 }
 
-success() {
-    if [[ "$SILENT" == false ]]; then
-        echo "SUCCESS: $1"
-    fi
-}
-
+# ===================================
+# UTILITIES
+# ===================================
 require_sudo() {
     if [[ $EUID -ne 0 ]]; then
         abort "This script must be run as root (use sudo)."
@@ -88,18 +104,20 @@ main() {
     local cmd="${1:-}"
 
     case "$cmd" in
-        help|"")
-            cmd_help
-            ;;
-        greet)
-            shift; cmd_greet "$@"
-            ;;
-        version)
-            shift; cmd_version "$@"
-            ;;
-        *)
-            abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
-            ;;
+    help | "")
+        cmd_help
+        ;;
+    greet)
+        shift
+        cmd_greet "$@"
+        ;;
+    version)
+        shift
+        cmd_version "$@"
+        ;;
+    *)
+        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+        ;;
     esac
 }
 
