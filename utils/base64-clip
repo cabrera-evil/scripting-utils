@@ -59,7 +59,6 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
-
 copy_file_to_clipboard() {
     local file="$1"
 
@@ -88,7 +87,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-
 show_help() {
     cat <<EOF
 Usage: $SCRIPT_NAME <command> [options]

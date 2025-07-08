@@ -104,7 +104,6 @@ notify_progress() {
 # ===================================
 # COMMANDS
 # ===================================
-
 cmd_create() {
 	mkdir -p "$BACKUP_DIR"
 	local filename="${OUTPUT_NAME:-backup-$(date +%Y%m%d%H%M%S).zip}"
@@ -230,7 +229,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-
 show_help() {
 	cat <<EOF
 Usage: $SCRIPT_NAME <command> [options]

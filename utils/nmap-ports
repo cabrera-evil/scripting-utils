@@ -65,7 +65,6 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
-
 cmd_basic() {
     local target="$1"
     info "Starting basic TCP scan on $target..."
@@ -94,7 +93,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-
 show_help() {
     cat <<EOF
 Usage: $SCRIPT_NAME <command> <target>
