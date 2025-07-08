@@ -78,6 +78,27 @@ function select_interface() {
 # ===================================
 # COMMANDS
 # ===================================
+function cmd_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  list                List available WireGuard interfaces
+  on                  Bring up an interface (interactive or specify)
+  off                 Bring down an interface (interactive or specify)
+  help                Show this help message
+  version             Show script version
+
+Options:
+  -i, --interface     Specify interface (e.g., wg0)
+
+Examples:
+  $SCRIPT_NAME list
+  $SCRIPT_NAME on --interface wg0
+  $SCRIPT_NAME off
+EOF
+}
+
 function cmd_list() {
     info "Available WireGuard interfaces:"
     list_interfaces || echo "None found."
@@ -100,27 +121,6 @@ function cmd_down() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-function show_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  list                List available WireGuard interfaces
-  on                  Bring up an interface (interactive or specify)
-  off                 Bring down an interface (interactive or specify)
-  help                Show this help message
-  version             Show script version
-
-Options:
-  -i, --interface     Specify interface (e.g., wg0)
-
-Examples:
-  $SCRIPT_NAME list
-  $SCRIPT_NAME on --interface wg0
-  $SCRIPT_NAME off
-EOF
-}
-
 main() {
     require_cmd "$WG_CMD"
     require_cmd "fzf"
@@ -149,7 +149,7 @@ main() {
     on) cmd_up ;;
     off) cmd_down ;;
     help | "")
-        show_help
+        cmd_help
         ;;
     version)
         cmd_version

@@ -100,6 +100,33 @@ detect_s3_subpath() {
 # ========================
 # COMMANDS
 # ========================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  ls                    List contents in s3://$BUCKET/$S3_PATH
+  clone                 Clone s3://$BUCKET/$S3_PATH to $CLONED_DIR
+  pull                  Download from S3 to local directory
+  push                  Upload from local directory to S3
+  version               Show script version
+  help                  Show help
+
+Options:
+  --region <region>       AWS region (default: $REGION)
+  --profile <name>        AWS profile (default: $PROFILE)
+  --access-key <key>      AWS access key ID
+  --secret-key <key>      AWS secret access key
+  --session-token <tok>   AWS session token (if temporary credentials)
+
+Examples:
+  $SCRIPT_NAME ls --region us-west-2
+  $SCRIPT_NAME clone --profile myprofile
+  $SCRIPT_NAME pull --access-key myaccesskey --secret-key
+  $SCRIPT_NAME push --session-token mysessiontoken
+EOF
+}
+
 cmd_ls() {
 	aws s3 ls "s3://$BUCKET/$S3_PATH/" "${AWS_OPTS[@]}"
 }
@@ -131,33 +158,6 @@ cmd_push() {
 
 cmd_version() {
 	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
-}
-
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  ls                    List contents in s3://$BUCKET/$S3_PATH
-  clone                 Clone s3://$BUCKET/$S3_PATH to $CLONED_DIR
-  pull                  Download from S3 to local directory
-  push                  Upload from local directory to S3
-  version               Show script version
-  help                  Show help
-
-Options:
-  --region <region>       AWS region (default: $REGION)
-  --profile <name>        AWS profile (default: $PROFILE)
-  --access-key <key>      AWS access key ID
-  --secret-key <key>      AWS secret access key
-  --session-token <tok>   AWS session token (if temporary credentials)
-
-Examples:
-  $SCRIPT_NAME ls --region us-west-2
-  $SCRIPT_NAME clone --profile myprofile
-  $SCRIPT_NAME pull --access-key myaccesskey --secret-key
-  $SCRIPT_NAME push --session-token mysessiontoken
-EOF
 }
 
 # ========================
@@ -206,7 +206,7 @@ main() {
 	clone) cmd_clone ;;
 	pull) cmd_pull ;;
 	push) cmd_push ;;
-	help | "") show_help ;;
+	help | "") cmd_help ;;
 	version) cmd_version ;;
 	*) abort "Unknown command: $cmd" ;;
 	esac

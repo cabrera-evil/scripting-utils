@@ -77,6 +77,26 @@ check_xdotool() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  run                       Keep the system awake by moving the mouse
+  help                      Show this help message
+  version                   Show script version
+
+Options:
+  --interval SECONDS       Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)
+  --no-install             Skip xdotool auto-install check
+
+Examples:
+  $SCRIPT_NAME run --interval 30
+  $SCRIPT_NAME version
+  $SCRIPT_NAME help
+EOF
+}
+
 cmd_run() {
 	info "Keeping system awake. Interval: ${INTERVAL}s"
 	info "Press Ctrl+C to exit."
@@ -97,26 +117,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  run                       Keep the system awake by moving the mouse
-  help                      Show this help message
-  version                   Show script version
-
-Options:
-  --interval SECONDS       Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)
-  --no-install             Skip xdotool auto-install check
-
-Examples:
-  $SCRIPT_NAME run --interval 30
-  $SCRIPT_NAME version
-  $SCRIPT_NAME help
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -148,7 +148,7 @@ main() {
 		cmd_run
 		;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

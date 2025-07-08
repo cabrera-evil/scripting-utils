@@ -88,6 +88,31 @@ get_branches() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  list                List Amplify apps and their branches
+  raw-apps            Output raw JSON from 'list-apps'
+  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --app-id ID         Required for 'raw-branches'
+  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
+  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
+  --access-key KEY    AWS Access Key ID
+  --secret-key KEY    AWS Secret Access Key
+  --session-token TK  AWS Session Token (optional)
+
+Examples:
+  $SCRIPT_NAME list --profile myprofile
+  $SCRIPT_NAME raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
+EOF
+}
+
 cmd_list() {
 	local apps_json
 	mapfile -t apps_json < <(get_apps)
@@ -160,31 +185,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  list                List Amplify apps and their branches
-  raw-apps            Output raw JSON from 'list-apps'
-  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
-  help                Show this help message
-  version             Show script version
-
-Options:
-  --app-id ID         Required for 'raw-branches'
-  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
-  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
-  --access-key KEY    AWS Access Key ID
-  --secret-key KEY    AWS Secret Access Key
-  --session-token TK  AWS Session Token (optional)
-
-Examples:
-  $SCRIPT_NAME list --profile myprofile
-  $SCRIPT_NAME raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -232,7 +232,7 @@ main() {
 	raw-apps) cmd_raw_apps ;;
 	raw-branches) cmd_raw_branches ;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

@@ -59,7 +59,32 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
-commit_and_push() {
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  commit              Commit and push immediately
+  schedule            Schedule commit via cron
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --repo <PATH>       Path to the Git repository (required)
+  --message <MSG>     Commit message (required)
+  --time <HH:MM>      Time to schedule (24h format, required for schedule)
+  --date <DATE>       Date (today, tomorrow, or YYYY-MM-DD; default: tomorrow)
+  -h, --help          Show this help message
+
+Examples:
+  $SCRIPT_NAME commit --repo /path/to/repo --message "Your commit message"
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Scheduled commit" --time 14:30 --date today
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Tomorrow's commit" --time 09:00 --date tomorrow
+  $SCRIPT_NAME schedule --repo /path/to/repo --message "Specific date commit" --time 10:00 --date 2023-10-15
+EOF
+}
+
+cmd_commit_and_push() {
 	local repo_path="$1"
 	local message="$2"
 	[[ -z "$repo_path" || -z "$message" ]] && abort "--repo and --message are required"
@@ -114,31 +139,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  commit              Commit and push immediately
-  schedule            Schedule commit via cron
-  help                Show this help message
-  version             Show script version
-
-Options:
-  --repo <PATH>       Path to the Git repository (required)
-  --message <MSG>     Commit message (required)
-  --time <HH:MM>      Time to schedule (24h format, required for schedule)
-  --date <DATE>       Date (today, tomorrow, or YYYY-MM-DD; default: tomorrow)
-  -h, --help          Show this help message
-
-Examples:
-  $SCRIPT_NAME commit --repo /path/to/repo --message "Your commit message"
-  $SCRIPT_NAME schedule --repo /path/to/repo --message "Scheduled commit" --time 14:30 --date today
-  $SCRIPT_NAME schedule --repo /path/to/repo --message "Tomorrow's commit" --time 09:00 --date tomorrow
-  $SCRIPT_NAME schedule --repo /path/to/repo --message "Specific date commit" --time 10:00 --date 2023-10-15
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -178,14 +178,14 @@ main() {
 
 	case "$cmd" in
 	commit)
-		commit_and_push "$repo" "$message"
+		cmd_commit_and_push "$repo" "$message"
 		;;
 	schedule)
 		[[ -z "$time" ]] && abort "--time is required for schedule"
 		schedule_commit "$time" "$date" "$repo" "$message"
 		;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

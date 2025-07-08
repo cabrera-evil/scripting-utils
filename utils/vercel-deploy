@@ -82,6 +82,29 @@ pull_vercel_env() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  build                   Pull env variables and build the project
+  deploy                  Deploy the project (after build)
+  full                    Pull env, build, and deploy
+  help                    Show this help message
+  version                 Show script version
+
+Options:
+  --env <environment>     Set deployment environment (default: production)
+  --help                  Show this help message
+  -- [args]               Pass additional arguments to Vercel CLI (only for deploy)
+
+Examples:
+  $SCRIPT_NAME build --env preview
+  $SCRIPT_NAME deploy --env preview -- --prod
+EOF
+    exit 1
+}
+
 cmd_build() {
     local env="$1"
     local flag="$env"
@@ -110,29 +133,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  build                   Pull env variables and build the project
-  deploy                  Deploy the project (after build)
-  full                    Pull env, build, and deploy
-  help                    Show this help message
-  version                 Show script version
-
-Options:
-  --env <environment>     Set deployment environment (default: production)
-  --help                  Show this help message
-  -- [args]               Pass additional arguments to Vercel CLI (only for deploy)
-
-Examples:
-  $SCRIPT_NAME build --env preview
-  $SCRIPT_NAME deploy --env preview -- --prod
-EOF
-    exit 1
-}
-
 main() {
     require_cmd pnpm
     install_vercel_cli
@@ -172,7 +172,7 @@ main() {
         cmd_deploy "$DEPLOY_ENV" "${additional_args[@]}"
         ;;
     help | "")
-        show_help
+        cmd_help
         ;;
     version)
         cmd_version

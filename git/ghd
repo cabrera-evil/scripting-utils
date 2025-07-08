@@ -71,6 +71,29 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  deploy                Create a GitHub deployment and mark it as successful
+
+Options:
+  --repo <REPO>         GitHub repo (e.g. user/repo)
+  --ref <SHA|BRANCH>    Git ref to deploy (default: main)
+  --env <NAME>          Deployment environment (default: production)
+  --desc <TEXT>         Deployment description
+  --url <URL>           Public environment URL
+  --prod                Mark as production environment (default: true)
+  --transient           Mark as transient environment (default: false)
+  --sleep <SECONDS>     Simulate deployment time (default: 10)
+  -h, --help            Show this help
+
+Examples:
+  $SCRIPT_NAME deploy --repo user/repo --ref main --env production --desc "Deploy to production" --url https://example.com
+EOF
+}
+
 deploy() {
 	[[ -z "$REPO" ]] && abort "Missing --repo"
 	[[ -z "$URL" ]] && abort "Missing --url"
@@ -104,29 +127,6 @@ deploy() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  deploy                Create a GitHub deployment and mark it as successful
-
-Options:
-  --repo <REPO>         GitHub repo (e.g. user/repo)
-  --ref <SHA|BRANCH>    Git ref to deploy (default: main)
-  --env <NAME>          Deployment environment (default: production)
-  --desc <TEXT>         Deployment description
-  --url <URL>           Public environment URL
-  --prod                Mark as production environment (default: true)
-  --transient           Mark as transient environment (default: false)
-  --sleep <SECONDS>     Simulate deployment time (default: 10)
-  -h, --help            Show this help
-
-Examples:
-  $SCRIPT_NAME deploy --repo user/repo --ref main --env production --desc "Deploy to production" --url https://example.com
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -178,7 +178,7 @@ main() {
 	case "$cmd" in
 	deploy) deploy ;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

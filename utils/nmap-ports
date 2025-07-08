@@ -65,6 +65,22 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> <target>
+
+Commands:
+  basic       Perform a basic TCP scan (common ports)
+  full-tcp    Perform a full TCP port scan (1-65535)
+  full-udp    Perform a full TCP and UDP port scan
+  version     Show script version
+  help        Show this help message
+
+Example:
+  $SCRIPT_NAME full-tcp 192.168.1.1
+EOF
+}
+
 cmd_basic() {
     local target="$1"
     info "Starting basic TCP scan on $target..."
@@ -93,22 +109,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> <target>
-
-Commands:
-  basic       Perform a basic TCP scan (common ports)
-  full-tcp    Perform a full TCP port scan (1-65535)
-  full-udp    Perform a full TCP and UDP port scan
-  version     Show script version
-  help        Show this help message
-
-Example:
-  $SCRIPT_NAME full-tcp 192.168.1.1
-EOF
-}
-
 main() {
     require_cmd nmap
     local cmd="${1:-}"
@@ -125,13 +125,13 @@ main() {
         cmd_full_tcp_udp "$@"
         ;;
     help | "")
-        show_help
+        cmd_help
         ;;
     version)
         cmd_version
         ;;
     *)
-        show_help
+        cmd_help
         ;;
     esac
 }

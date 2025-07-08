@@ -117,6 +117,33 @@ function load_secrets() {
 # ===================================
 # COMMANDS
 # ===================================
+function cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  apply           Set secrets from file or inline
+  delete          Delete secrets parsed from file or inline
+  list            List secrets in the repo or environment
+  purge           Delete ALL secrets from the repo or environment (danger!)
+  help            Show this help message
+  version         Show script version
+
+Options:
+  -r, --repo       GitHub repo (owner/repo). Default: $REPO
+  -e, --env        Environment name (for environment-level secrets)
+  -f, --file       File with secrets in KEY=VALUE format (default: $FILE)
+  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
+  --yes            Skip confirmation prompt for purge
+
+Examples:
+  $SCRIPT_NAME apply --file .env.production
+  $SCRIPT_NAME delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
+  $SCRIPT_NAME purge --env production --yes
+  $SCRIPT_NAME list
+EOF
+}
+
 function cmd_apply() {
 	for key in "${!SECRETS[@]}"; do
 		local value="${SECRETS[$key]}"
@@ -179,33 +206,6 @@ function cmd_purge() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-function show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  apply           Set secrets from file or inline
-  delete          Delete secrets parsed from file or inline
-  list            List secrets in the repo or environment
-  purge           Delete ALL secrets from the repo or environment (danger!)
-  help            Show this help message
-  version         Show script version
-
-Options:
-  -r, --repo       GitHub repo (owner/repo). Default: $REPO
-  -e, --env        Environment name (for environment-level secrets)
-  -f, --file       File with secrets in KEY=VALUE format (default: $FILE)
-  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
-  --yes            Skip confirmation prompt for purge
-
-Examples:
-  $SCRIPT_NAME apply --file .env.production
-  $SCRIPT_NAME delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
-  $SCRIPT_NAME purge --env production --yes
-  $SCRIPT_NAME list
-EOF
-}
-
 main() {
 	cmd="${1:-}"
 	shift || true
@@ -254,7 +254,7 @@ main() {
 		cmd_purge
 		;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

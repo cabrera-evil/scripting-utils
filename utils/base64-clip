@@ -59,7 +59,24 @@ require_cmd() {
 # ===================================
 # COMMANDS
 # ===================================
-copy_file_to_clipboard() {
+cmd_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  copy                  Encode a file to Base64 and copy it to clipboard
+  help                  Show this help message
+  version               Show script version
+
+Options:
+  --file <FILE>         File to encode (required)
+
+Examples:
+  $SCRIPT_NAME copy --file /path/to/file.txt
+EOF
+}
+
+cmd_copy_file_to_clipboard() {
     local file="$1"
 
     [[ ! -f "$file" ]] && {
@@ -87,23 +104,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  copy                  Encode a file to Base64 and copy it to clipboard
-  help                  Show this help message
-  version               Show script version
-
-Options:
-  --file <FILE>         File to encode (required)
-
-Examples:
-  $SCRIPT_NAME copy --file /path/to/file.txt
-EOF
-}
-
 main() {
     local cmd="${1:-}"
     shift || true
@@ -131,10 +131,10 @@ main() {
         [[ -z "$FILE_PATH" ]] && {
             abort "--file is required"
         }
-        copy_file_to_clipboard "$FILE_PATH"
+        cmd_copy_file_to_clipboard "$FILE_PATH"
         ;;
     help | "")
-        show_help
+        cmd_help
         ;;
     version)
         cmd_version

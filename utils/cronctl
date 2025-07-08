@@ -70,6 +70,26 @@ sanitize_filename() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  list                      List all cronjobs (in /etc/cron.d or user crontab)
+  add "<schedule>" "<cmd>"  Add a cronjob (root to /etc/cron.d, user to crontab)
+  remove "<pattern>"        Remove cronjob(s) matching pattern
+  load [file.conf]          Load .conf file (or all from $CRON_DIR if no file is provided)
+  help                      Show this help message
+  version                   Show script version
+
+Examples:
+  $SCRIPT_NAME list
+  $SCRIPT_NAME add "0 3 * * *" "/usr/local/bin/backup.sh"
+  $SCRIPT_NAME remove "backup.sh"
+  $SCRIPT_NAME load $CRON_DIR/myjob.conf
+EOF
+}
+
 list_cronjobs() {
 	if [[ "$IS_ROOT" == true ]]; then
 		info "Listing files in $CRON_DEST:"
@@ -177,26 +197,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  list                      List all cronjobs (in /etc/cron.d or user crontab)
-  add "<schedule>" "<cmd>"  Add a cronjob (root to /etc/cron.d, user to crontab)
-  remove "<pattern>"        Remove cronjob(s) matching pattern
-  load [file.conf]          Load .conf file (or all from $CRON_DIR if no file is provided)
-  help                      Show this help message
-  version                   Show script version
-
-Examples:
-  $SCRIPT_NAME list
-  $SCRIPT_NAME add "0 3 * * *" "/usr/local/bin/backup.sh"
-  $SCRIPT_NAME remove "backup.sh"
-  $SCRIPT_NAME load $CRON_DIR/myjob.conf
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -218,7 +218,7 @@ main() {
 		load_cronjobs "${1:-}"
 		;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

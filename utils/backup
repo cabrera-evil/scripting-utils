@@ -104,6 +104,41 @@ notify_progress() {
 # ===================================
 # COMMANDS
 # ===================================
+cmd_help() {
+	cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  create              Create a backup
+  share               Share latest backup via HTTP
+  download            Download and restore from remote backup server
+  restore             Restore from local .zip backup
+  list                List local backup files
+  help                Show this help message
+  version             Show script version
+
+Options:
+  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
+  --file <FILE>       Path to the local zip file to restore from
+  --dest <DIR>        Restore destination directory (default: $DESTINATION)
+  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
+  --ip                IP address of the remote server to download the backup from
+  --port <PORT>       HTTP port to share/download (default: $PORT)
+  --output <NAME>     Override output backup file name
+  --zip-name <NAME>   Expected zip file to download (default: auto)
+  --dirs <D1,D2>      Comma-separated directories to back up
+  --exclude <PATTS>   Comma-separated exclude patterns
+  --compress <0|9>    Zip compression level (default: 0)
+  --no-notify         Disable dunstify popups
+  --verbose           Show zip/rsync output live
+
+Examples:
+  $SCRIPT_NAME create --dir ~/Backups --dest ~/Restore
+  $SCRIPT_NAME share
+  $SCRIPT_NAME download
+EOF
+}
+
 cmd_create() {
 	mkdir -p "$BACKUP_DIR"
 	local filename="${OUTPUT_NAME:-backup-$(date +%Y%m%d%H%M%S).zip}"
@@ -229,41 +264,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-show_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  create              Create a backup
-  share               Share latest backup via HTTP
-  download            Download and restore from remote backup server
-  restore             Restore from local .zip backup
-  list                List local backup files
-  help                Show this help message
-  version             Show script version
-
-Options:
-  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
-  --file <FILE>       Path to the local zip file to restore from
-  --dest <DIR>        Restore destination directory (default: $DESTINATION)
-  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
-  --ip                IP address of the remote server to download the backup from
-  --port <PORT>       HTTP port to share/download (default: $PORT)
-  --output <NAME>     Override output backup file name
-  --zip-name <NAME>   Expected zip file to download (default: auto)
-  --dirs <D1,D2>      Comma-separated directories to back up
-  --exclude <PATTS>   Comma-separated exclude patterns
-  --compress <0|9>    Zip compression level (default: 0)
-  --no-notify         Disable dunstify popups
-  --verbose           Show zip/rsync output live
-
-Examples:
-  $SCRIPT_NAME create --dir ~/Backups --dest ~/Restore
-  $SCRIPT_NAME share
-  $SCRIPT_NAME download
-EOF
-}
-
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -345,7 +345,7 @@ main() {
 		;;
 	list) cmd_list ;;
 	help | "")
-		show_help
+		cmd_help
 		;;
 	version)
 		cmd_version

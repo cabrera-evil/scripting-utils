@@ -91,6 +91,36 @@ function deployment_summary() {
 # ===================================
 # COMMANDS
 # ===================================
+function cmd_help() {
+    cat <<EOF
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  install       Install the Helm chart
+  upgrade       Upgrade the Helm release
+  uninstall     Uninstall the Helm release
+  logs          Tail logs from the release pod
+  describe      Describe the main pod in the release
+  status        Show status of Helm release
+  help          Show this help message
+
+Options:
+  -n, --namespace     Kubernetes namespace (default: $DEFAULT_NAMESPACE)
+  -r, --release       Helm release name (default: $RELEASE_NAME)
+  -d, --dir           Helm chart directory (default: current directory)
+  -f, --values        Custom values file path (relative to --dir or absolute)
+  -s, --stage         Deployment stage (uses values.<stage>.yaml in --dir)
+  -p, --repo          Remote Helm repo URL (optional)
+  -m, --repo-name     Helm repo alias (default: "HELM_REPO_NAME")
+  -c, --chart         Chart name in HELM_REPO_NAME repo (required with --repo)
+
+Examples:
+  $SCRIPT_NAME install --stage dev
+  $SCRIPT_NAME upgrade --repo https://charts.example.com/ --repo-name myrepo --chart mychart
+  $SCRIPT_NAME logs -r deploy-chart
+EOF
+}
+
 function cmd_install() {
     helm install "$RELEASE_NAME" "$(get_chart_source)" \
         --namespace "$NAMESPACE" \
@@ -132,36 +162,6 @@ cmd_version() {
 # ===================================
 # MAIN LOGIC
 # ===================================
-function show_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  install       Install the Helm chart
-  upgrade       Upgrade the Helm release
-  uninstall     Uninstall the Helm release
-  logs          Tail logs from the release pod
-  describe      Describe the main pod in the release
-  status        Show status of Helm release
-  help          Show this help message
-
-Options:
-  -n, --namespace     Kubernetes namespace (default: $DEFAULT_NAMESPACE)
-  -r, --release       Helm release name (default: $RELEASE_NAME)
-  -d, --dir           Helm chart directory (default: current directory)
-  -f, --values        Custom values file path (relative to --dir or absolute)
-  -s, --stage         Deployment stage (uses values.<stage>.yaml in --dir)
-  -p, --repo          Remote Helm repo URL (optional)
-  -m, --repo-name     Helm repo alias (default: "HELM_REPO_NAME")
-  -c, --chart         Chart name in HELM_REPO_NAME repo (required with --repo)
-
-Examples:
-  $SCRIPT_NAME install --stage dev
-  $SCRIPT_NAME upgrade --repo https://charts.example.com/ --repo-name myrepo --chart mychart
-  $SCRIPT_NAME logs -r deploy-chart
-EOF
-}
-
 function main() {
     local cmd="${1:-}"
     shift || true
@@ -226,7 +226,7 @@ function main() {
     describe) cmd_describe ;;
     status) cmd_status ;;
     help | "")
-        show_help
+        cmd_help
         ;;
     version)
         cmd_version
