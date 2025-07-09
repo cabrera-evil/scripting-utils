@@ -92,10 +92,10 @@ EOF
 
 list_cronjobs() {
 	if [[ "$IS_ROOT" == true ]]; then
-		info "Listing files in $CRON_DEST:"
+		log "Listing files in $CRON_DEST:"
 		ls -1 "$CRON_DEST"
 	else
-		info "Current user crontab:"
+		log "Current user crontab:"
 		crontab -l || echo "(No user cronjobs found)"
 	fi
 }
@@ -131,7 +131,7 @@ remove_cronjob() {
 			matched=true
 		done < <(grep -l "$pattern" "$CRON_DEST"/* 2>/dev/null || true)
 
-		[[ "$matched" == false ]] && info "No matching files found in $CRON_DEST"
+		[[ "$matched" == false ]] && log "No matching files found in $CRON_DEST"
 	else
 		local tmpfile
 		tmpfile=$(mktemp)
@@ -148,12 +148,12 @@ load_cronjobs() {
 
 	if [[ ! -e "$source" ]]; then
 		[[ "$source" == "$CRON_DIR" ]] && mkdir -p "$CRON_DIR"
-		info "No such file or directory: '$source'"
+		log "No such file or directory: '$source'"
 		return
 	fi
 
 	if [[ -d "$source" ]]; then
-		info "Using cron directory '$source'"
+		log "Using cron directory '$source'"
 		local found=false
 		for file in "$source"/*.conf; do
 			[[ -f "$file" ]] || continue
@@ -163,7 +163,7 @@ load_cronjobs() {
 		if [[ "$found" == true ]]; then
 			success "Loaded all cronjobs from '$source'"
 		else
-			info "No .conf files found in '$source'"
+			log "No .conf files found in '$source'"
 		fi
 		return
 	fi

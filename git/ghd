@@ -109,11 +109,11 @@ deploy() {
 		-F production_environment=$IS_PRODUCTION \
 		--jq '.id')
 
-	info "Deployment ID: $DEPLOYMENT_ID"
+	log "Deployment ID: $DEPLOYMENT_ID"
 
 	gh api repos/$REPO/deployments/$DEPLOYMENT_ID/statuses -X POST \
 		-f state="in_progress"
-	info "Deployment in progress..."
+	log "Deployment in progress..."
 
 	sleep "$SLEEP_SECONDS"
 

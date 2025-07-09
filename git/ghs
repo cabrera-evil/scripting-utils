@@ -67,12 +67,12 @@ require_cmd() {
 }
 
 function log_summary() {
-	info -e "\nGitHub Secrets CLI"
+	log -e "\nGitHub Secrets CLI"
 	echo "──────────────────────────────"
-	info "Repo:        $REPO"
-	[[ -n "$ENV" ]] && info "Environment: $ENV"
-	[[ -n "${FILE:-}" && -f "$FILE" ]] && info "File:        $FILE"
-	[[ -n "${INLINE:-}" ]] && info "Inline:      $INLINE"
+	log "Repo:        $REPO"
+	[[ -n "$ENV" ]] && log "Environment: $ENV"
+	[[ -n "${FILE:-}" && -f "$FILE" ]] && log "File:        $FILE"
+	[[ -n "${INLINE:-}" ]] && log "Inline:      $INLINE"
 	echo "──────────────────────────────"
 }
 
@@ -81,7 +81,7 @@ function load_secrets() {
 		while IFS= read -r key; do
 			# Install yq if not already installed
 			if ! command -v yq &>/dev/null; then
-				info "🔧 Installing yq..."
+				log "🔧 Installing yq..."
 				if command -v brew &>/dev/null; then
 					brew install yq
 				elif command -v apt &>/dev/null; then
@@ -93,7 +93,7 @@ function load_secrets() {
 			# Parse the YAML file
 			value="$(yq -r ".\"$key\"" "$FILE")"
 			if [[ "$value" == "null" ]]; then
-				info "Skipping key '$key' (no value found)"
+				log "Skipping key '$key' (no value found)"
 				continue
 			fi
 			SECRETS["$key"]="$value"
@@ -148,10 +148,10 @@ function cmd_apply() {
 	for key in "${!SECRETS[@]}"; do
 		local value="${SECRETS[$key]}"
 		if [[ -n "$ENV" ]]; then
-			info "Setting env secret: $key"
+			log "Setting env secret: $key"
 			gh secret set "$key" --env "$ENV" --body "$value" --repo "$REPO"
 		else
-			info "Setting repo secret: $key"
+			log "Setting repo secret: $key"
 			gh secret set "$key" --body "$value" --repo "$REPO"
 		fi
 	done
@@ -160,10 +160,10 @@ function cmd_apply() {
 function cmd_delete() {
 	for key in "${!SECRETS[@]}"; do
 		if [[ -n "$ENV" ]]; then
-			info "Deleting env secret: $key"
+			log "Deleting env secret: $key"
 			gh secret delete "$key" --env "$ENV" --repo "$REPO" || true
 		else
-			info "Deleting repo secret: $key"
+			log "Deleting repo secret: $key"
 			gh secret delete "$key" --repo "$REPO" || true
 		fi
 	done
@@ -171,10 +171,10 @@ function cmd_delete() {
 
 function cmd_list() {
 	if [[ -n "$ENV" ]]; then
-		info "Environment secrets for '$ENV':"
+		log "Environment secrets for '$ENV':"
 		gh secret list --env "$ENV" --repo "$REPO"
 	else
-		info "Repository secrets:"
+		log "Repository secrets:"
 		gh secret list --repo "$REPO"
 	fi
 }
@@ -183,7 +183,7 @@ function cmd_purge() {
 	local scope=("--repo" "$REPO")
 	[[ -n "$ENV" ]] && scope+=(--env "$ENV")
 
-	info "This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
+	log "This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
 	if [[ "${CONFIRM_YES:-}" != "true" ]]; then
 		read -r -p "Are you sure? (y/N): " confirm
 		[[ "$confirm" != "y" && "$confirm" != "Y" ]] && {
@@ -193,12 +193,12 @@ function cmd_purge() {
 
 	mapfile -t secrets < <(gh secret list "${scope[@]}" --json name -q '.[].name')
 	if [[ ${#secrets[@]} -eq 0 ]]; then
-		info "No secrets to delete."
+		log "No secrets to delete."
 		return
 	fi
 
 	for key in "${secrets[@]}"; do
-		info "Deleting secret: $key"
+		log "Deleting secret: $key"
 		gh secret delete "$key" "${scope[@]}" || true
 	done
 }

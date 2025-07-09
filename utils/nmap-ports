@@ -83,21 +83,21 @@ EOF
 
 cmd_basic() {
     local target="$1"
-    info "Starting basic TCP scan on $target..."
+    log "Starting basic TCP scan on $target..."
     nmap -T4 -F -v "$target" -oN "$OUTPUT_DIR/basic_$target.txt"
     success "Basic scan completed. Results saved to $OUTPUT_DIR/basic_$target.txt"
 }
 
 cmd_full_tcp() {
     local target="$1"
-    info "Starting full TCP port scan on $target..."
+    log "Starting full TCP port scan on $target..."
     nmap -p- -T4 -A -v "$target" -oN "$OUTPUT_DIR/full_tcp_$target.txt" -oG "$OUTPUT_DIR/full_tcp_$target.gnmap" -oX "$OUTPUT_DIR/full_tcp_$target.xml"
     success "Full TCP scan completed. Results saved to $OUTPUT_DIR/"
 }
 
 cmd_full_tcp_udp() {
     local target="$1"
-    info "Starting full TCP and UDP port scan on $target..."
+    log "Starting full TCP and UDP port scan on $target..."
     nmap -sS -sU -p T:1-65535,U:1-1000 -T4 -A -v "$target" -oN "$OUTPUT_DIR/full_tcp_udp_$target.txt"
     success "Full TCP/UDP scan completed. Results saved to $OUTPUT_DIR/"
 }

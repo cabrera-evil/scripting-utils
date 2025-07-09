@@ -68,7 +68,7 @@ check_xdotool() {
 		if [[ "$INSTALL" == false ]]; then
 			abort "xdotool not found and --no-install was used."
 		fi
-		info "🔧 Installing xdotool..."
+		log "🔧 Installing xdotool..."
 		sudo apt-get update -qq && sudo apt-get install -y xdotool
 		success "xdotool installed successfully."
 	fi
@@ -98,8 +98,8 @@ EOF
 }
 
 cmd_run() {
-	info "Keeping system awake. Interval: ${INTERVAL}s"
-	info "Press Ctrl+C to exit."
+	log "Keeping system awake. Interval: ${INTERVAL}s"
+	log "Press Ctrl+C to exit."
 
 	while true; do
 		eval "$(xdotool getmouselocation --shell 2>/dev/null)"

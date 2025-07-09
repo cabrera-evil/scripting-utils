@@ -62,20 +62,20 @@ require_cmd() {
 }
 
 install_vercel_cli() {
-    info "Checking Vercel CLI..."
+    log "Checking Vercel CLI..."
     if command -v vercel &>/dev/null; then
         success "Vercel CLI is already installed."
         return
     fi
 
-    info "Installing Vercel CLI..."
+    log "Installing Vercel CLI..."
     pnpm add vercel --global || abort "Failed to install Vercel CLI."
     success "Vercel CLI installed successfully."
 }
 
 pull_vercel_env() {
     local env="$1"
-    info "Pulling Vercel environment variables for $env..."
+    log "Pulling Vercel environment variables for $env..."
     vercel pull --yes --environment="$env" || abort "Failed to pull Vercel environment variables."
 }
 
@@ -110,7 +110,7 @@ cmd_build() {
     local flag="$env"
     [[ "$env" == "production" ]] && flag="prod"
 
-    info "Building the project for $env..."
+    log "Building the project for $env..."
     vercel build --"$flag" || abort "Build failed."
     success "Build completed successfully."
 }
@@ -121,7 +121,7 @@ cmd_deploy() {
     local flag="$env"
     [[ "$env" == "production" ]] && flag="prod"
 
-    info "Deploying the project to Vercel ($env)..."
+    log "Deploying the project to Vercel ($env)..."
     vercel deploy --"$flag" "$@" || abort "Deployment failed."
     success "Deployment completed successfully."
 }

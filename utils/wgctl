@@ -100,7 +100,7 @@ EOF
 }
 
 function cmd_list() {
-    info "Available WireGuard interfaces:"
+    log "Available WireGuard interfaces:"
     list_interfaces || echo "None found."
 }
 

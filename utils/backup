@@ -143,7 +143,7 @@ cmd_create() {
 	mkdir -p "$BACKUP_DIR"
 	local filename="${OUTPUT_NAME:-backup-$(date +%Y%m%d%H%M%S).zip}"
 	local path="$BACKUP_DIR/$filename"
-	info "Creating: $path"
+	log "Creating: $path"
 	notify "Creating backup..."
 	local tmp_list
 	tmp_list=$(mktemp)
@@ -206,7 +206,7 @@ cmd_share() {
 EOF
 	local ip
 	ip=$(hostname -I | awk '{print $1}')
-	info "Serving backup at: http://$ip:$PORT/"
+	log "Serving backup at: http://$ip:$PORT/"
 	notify "Sharing: $filename"
 	cd "$share_dir"
 	python3 -m http.server "$PORT" >/dev/null 2>&1
@@ -225,7 +225,7 @@ cmd_restore() {
 	local count=0
 	local prev_percent=0
 	notify_progress 0 "Restoring from $file (0%)"
-	rsync -av --info=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
+	rsync -av --log=progress2 --remove-source-files --ignore-existing "$source/" "$DESTINATION/" | while read -r line; do
 		if [[ "$line" =~ to-check ]]; then
 			((count++))
 			local percent=$((100 * count / total))
@@ -245,7 +245,7 @@ cmd_download() {
 	local ip="$1"
 	local url="http://$ip:$PORT"
 	local out_path="$TMP_DIR"
-	info "⬇Downloading from: $url"
+	log "⬇Downloading from: $url"
 	wget -q -O "$out_path" "$url" || {
 		abort "Download failed"
 	}
@@ -253,8 +253,8 @@ cmd_download() {
 }
 
 cmd_list() {
-	info "Backups in $BACKUP_DIR:"
-	ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || info "No backups found."
+	log "Backups in $BACKUP_DIR:"
+	ls -lh "$BACKUP_DIR"/*.zip 2>/dev/null || log "No backups found."
 }
 
 cmd_version() {
