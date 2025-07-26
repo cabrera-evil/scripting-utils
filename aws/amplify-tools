@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===================================
-# Colors
+# COLORS
 # ===================================
 RED='\e[0;31m'
 GREEN='\e[0;32m'
@@ -29,7 +29,7 @@ SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
 
 # ===================================
-# Logging
+# LOGGING
 # ===================================
 log() {
 	if [ "$SILENT" != "true" ]; then

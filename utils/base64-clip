@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===================================
-# Colors
+# COLORS
 # ===================================
 RED='\e[0;31m'
 GREEN='\e[0;32m'
@@ -20,7 +20,7 @@ DEBUG=false
 SILENT=false
 
 # ===================================
-# Logging
+# LOGGING
 # ===================================
 log() {
     if [ "$SILENT" != "true" ]; then

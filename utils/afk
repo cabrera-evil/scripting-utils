@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===================================
-# Colors
+# COLORS
 # ===================================
 RED='\e[0;31m'
 GREEN='\e[0;32m'
@@ -27,7 +27,7 @@ INTERVAL=$DEFAULT_INTERVAL
 INSTALL=true
 
 # ===================================
-# Logging
+# LOGGING
 # ===================================
 log() {
 	if [ "$SILENT" != "true" ]; then

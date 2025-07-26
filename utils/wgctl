@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===================================
-# Colors
+# COLORS
 # ===================================
 RED='\e[0;31m'
 GREEN='\e[0;32m'
@@ -26,7 +26,7 @@ WG_CONF_DIR="/etc/wireguard"
 WG_CMD="wg-quick"
 
 # ===================================
-# Logging
+# LOGGING
 # ===================================
 log() {
     if [ "$SILENT" != "true" ]; then
