@@ -22,7 +22,7 @@ SILENT=false
 # ===================================
 # DEFAULT CONFIGURATION
 # ===================================
-BACKUP_DIR="$HOME/Documents/Backups"
+BACKUP_DIR="$HOME/Backups"
 DESTINATION="$HOME"
 TMP_DIR="/tmp"
 PORT=8000
