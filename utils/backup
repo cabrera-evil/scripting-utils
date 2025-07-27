@@ -34,6 +34,7 @@ ZIP_NAME=""
 DUNST_ID=91190
 DIRS_TO_BACKUP=(
 	"$HOME/artifacts"
+	"$HOME/Backups"
 	"$HOME/dockerhub"
 	"$HOME/Documents"
 	"$HOME/git"
