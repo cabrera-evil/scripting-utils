@@ -72,44 +72,14 @@ apply_wallpaper() {
 }
 
 choose_wallpaper() {
-	# Use a simple fallback approach since ueberzug is complex in fzf preview
-	local preview_cmd='
-		img="$1"
-		if [[ ! -f "$img" ]]; then
-			echo "File not found: $img"
-			exit 1
-		fi
-		echo "File: $(basename "$img")"
-		echo "Path: $img"
-		if command -v identify >/dev/null 2>&1; then
-			identify -format "Size: %wx%h\nFormat: %m" "$img" 2>/dev/null || true
-		fi
-		echo ""
-		# Try preview methods in order
-		if command -v chafa >/dev/null 2>&1; then
-			chafa --fill=block --size=50x25 "$img" 2>/dev/null
-		elif command -v catimg >/dev/null 2>&1; then
-			catimg -w 50 "$img" 2>/dev/null
-		elif command -v imgcat >/dev/null 2>&1; then
-			imgcat "$img" 2>/dev/null
-		elif command -v viu >/dev/null 2>&1; then
-			viu -w 50 "$img" 2>/dev/null
-		else
-			echo "No image preview tool available"
-			echo "Install one of: chafa, catimg, viu, or imgcat"
-		fi
-	'
-	debug "Using fallback preview methods"
-	local selected
-	selected=$(find "$WALLPAPER_DIR" -type f \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.jpeg' -o -iname '*.webp' -o -iname '*.bmp' -o -iname '*.tiff' \) |
-		sort |
-		fzf --prompt="Select wallpaper: " \
-			--preview="bash -c '$preview_cmd' _ {}" \
-			--preview-window=right:60%:wrap \
-			--bind="ctrl-p:toggle-preview" \
-			--header="Press Ctrl-P to toggle preview" \
-			--border) || abort "No wallpaper selected."
-	echo "$selected"
+	require_cmd fzf
+	require_cmd feh
+	require_cmd chafa
+	find "$WALLPAPER_DIR" -type f \( -iname '*.jpg' -o -iname '*.png' \) |
+		fzf --preview="chafa --symbols=block --fill=block --size=60x25 --format=ansi {}" \
+			--preview-window=right:60% |
+		tee /dev/tty |
+		xargs -r feh --bg-scale
 }
 
 # ===================================
