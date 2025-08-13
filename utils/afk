@@ -137,7 +137,6 @@ cmd_run() {
 			break
 		fi
 		perform_keep_awake &
-		success "Keep-awake service is running"
 		sleep "$INTERVAL"
 	done
 }
@@ -176,7 +175,7 @@ cmd_status() {
 # ===================================
 # HELP & VERSION
 # ===================================
-show_help() {
+cmd_help() {
 	cat <<EOF
 ${BOLD}${SCRIPT_NAME}${NC} - Keep your Linux system awake
 
@@ -205,12 +204,6 @@ ${BOLD}METHODS:${NC}
     ${GREEN}key${NC}       Send harmless keypress (requires: xdotool)  
     ${GREEN}caffeine${NC}  Use caffeine utility (requires: caffeine)
 
-${BOLD}EXAMPLES:${NC}
-    $SCRIPT_NAME run                        ${DIM}# Start with default settings${NC}
-    $SCRIPT_NAME run -i 30 -m key           ${DIM}# Keyboard method, 30s interval${NC}
-    $SCRIPT_NAME run -t 3600 --quiet        ${DIM}# Run quietly for 1 hour${NC}
-    $SCRIPT_NAME status                     ${DIM}# Check service status${NC}
-
 ${BOLD}INSTALLATION:${NC}
     ${DIM}# For mouse/key methods:${NC}
     sudo apt install xdotool
@@ -220,7 +213,7 @@ ${BOLD}INSTALLATION:${NC}
 EOF
 }
 
-show_version() {
+cmd_version() {
 	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
 }
 
@@ -258,11 +251,11 @@ parse_arguments() {
 			shift
 			;;
 		-h | --help)
-			show_help
+			cmd_help
 			exit 0
 			;;
 		-v | --version)
-			show_version
+			cmd_version
 			exit 0
 			;;
 		-*)
@@ -287,8 +280,8 @@ main() {
 	run) cmd_run ;;
 	stop) cmd_stop ;;
 	status) cmd_status ;;
-	help) show_help ;;
-	version) show_version ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
 	*) die "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage information." ;;
 	esac
 }
