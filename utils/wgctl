@@ -2,162 +2,297 @@
 set -euo pipefail
 
 # ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.1.0"
+
+# ===================================
 # COLORS
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
 
 # ===================================
-# GLOBAL CONFIGURATION
+# CONFIGURATION
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
 DEBUG=false
-SILENT=false
+QUIET=false
+INTERFACE=""
+
+# Default configuration
+readonly DEFAULT_WG_CONF_DIR="/etc/wireguard"
+readonly DEFAULT_WG_CMD="wg-quick"
+
+WG_CONF_DIR="$DEFAULT_WG_CONF_DIR"
+WG_CMD="$DEFAULT_WG_CMD"
 
 # ===================================
-# DEFAULT CONFIGURATION
+# LOGGING FUNCTIONS
 # ===================================
-WG_CONF_DIR="/etc/wireguard"
-WG_CMD="wg-quick"
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*"; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*"; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
+}
 
 # ===================================
-# LOGGING
-# ===================================
-log() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${BLUE}==> $1${NC}"
-    fi
-}
-warn() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${YELLOW}⚠️  $1${NC}" >&2
-    fi
-}
-success() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${GREEN}✓ $1${NC}"
-    fi
-}
-abort() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${RED}✗ $1${NC}" >&2
-    fi
-    exit 1
-}
-debug() {
-    if [ "$DEBUG" = "true" ]; then
-        echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
-    fi
-}
-
-# ========================
 # UTILITIES
-# ========================
-require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+# ===================================
+require_command() {
+	local cmd="$1" hint="${2:-$1}"
+	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
 }
 
-function list_interfaces() {
-    find "$WG_CONF_DIR" -type f -name "*.conf" -exec basename {} .conf \;
+print_summary() {
+	printf "\n${BOLD}WireGuard CLI${NC}\n"
+	printf "Config Dir:  %s\n" "$WG_CONF_DIR"
+	printf "Command:     %s\n" "$WG_CMD"
+	if [[ -n "$INTERFACE" ]]; then
+		printf "Interface:   %s\n" "$INTERFACE"
+	fi
 }
 
-function select_interface() {
-    local interfaces
-    interfaces=$(list_interfaces)
-    if [[ -z "$interfaces" ]]; then
-        abort "No WireGuard interfaces found in $WG_CONF_DIR"
-    fi
-    echo "$interfaces" | fzf --prompt="Select WireGuard interface: " --height=10 --border
+list_interfaces() {
+	if [[ ! -d "$WG_CONF_DIR" ]]; then
+		die "WireGuard config directory not found: $WG_CONF_DIR"
+	fi
+	find "$WG_CONF_DIR" -type f -name "*.conf" -exec basename {} .conf \; 2>/dev/null | sort
+}
+
+select_interface() {
+	local interfaces
+	interfaces=$(list_interfaces)
+	if [[ -z "$interfaces" ]]; then
+		die "No WireGuard interfaces found in $WG_CONF_DIR"
+	fi
+
+	debug "Available interfaces: $(echo "$interfaces" | tr '\n' ' ')"
+
+	if ! echo "$interfaces" | fzf --prompt="Select WireGuard interface: " --height=10 --border 2>/dev/null; then
+		die "Interface selection cancelled or fzf failed"
+	fi
+}
+
+validate_interface() {
+	local iface="$1"
+	local conf_file="$WG_CONF_DIR/$iface.conf"
+
+	debug "Validating interface: $iface"
+	debug "Config file: $conf_file"
+
+	if [[ ! -f "$conf_file" ]]; then
+		die "Interface '$iface' not found. Config file missing: $conf_file"
+	fi
+}
+
+# Pretty aligned interface listing
+pad_right() {
+	local s="$1" width="$2"
+	printf "%-*s" "$width" "$s"
 }
 
 # ===================================
 # COMMANDS
 # ===================================
-function cmd_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - WireGuard interface management tool
 
-Commands:
-  list                List available WireGuard interfaces
-  on                  Bring up an interface (interactive or specify)
-  off                 Bring down an interface (interactive or specify)
-  help                Show this help message
-  version             Show script version
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
 
-Options:
-  -i, --interface     Specify interface (e.g., wg0)
+${BOLD}COMMANDS:${NC}
+  ${GREEN}list${NC}      List available WireGuard interfaces
+  ${GREEN}up${NC}        Bring up an interface (interactive or specify)
+  ${GREEN}down${NC}      Bring down an interface (interactive or specify)
+  ${GREEN}status${NC}    Show status of interfaces
+  ${GREEN}help${NC}      Show this help
+  ${GREEN}version${NC}   Show version
 
-Examples:
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}-i, --interface${NC} <name>        Specify interface (e.g., wg0)
+  ${YELLOW}--config-dir${NC} <path>           WireGuard config directory (default: $DEFAULT_WG_CONF_DIR)
+  ${YELLOW}--wg-cmd${NC} <command>            WireGuard command (default: $DEFAULT_WG_CMD)
+  ${YELLOW}-q, --quiet${NC}                   Minimize output
+  ${YELLOW}-d, --debug${NC}                   Enable debug output
+  ${YELLOW}-h, --help${NC}                    Show help
+  ${YELLOW}-v, --version${NC}                 Show version
+
+${BOLD}EXAMPLES:${NC}
   $SCRIPT_NAME list
-  $SCRIPT_NAME on --interface wg0
-  $SCRIPT_NAME off
+  $SCRIPT_NAME up --interface wg0
+  $SCRIPT_NAME down
+  $SCRIPT_NAME status --debug
 EOF
 }
 
-function cmd_list() {
-    log "Available WireGuard interfaces:"
-    list_interfaces || echo "None found."
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
 }
 
-function cmd_up() {
-    local iface="${INTERFACE:-}"
-    [[ -z "$iface" ]] && iface=$(select_interface)
-    sudo $WG_CMD up "$iface"
-    success "Interface '$iface' is up."
+cmd_list() {
+	local interfaces
+	interfaces=$(list_interfaces)
+
+	if [[ -z "$interfaces" ]]; then
+		warn "No WireGuard interfaces found in $WG_CONF_DIR"
+		return
+	fi
+
+	printf "\n${BOLD}Available WireGuard interfaces:${NC}\n"
+	while IFS= read -r iface; do
+		local conf_file="$WG_CONF_DIR/$iface.conf"
+		local size
+		size=$(stat -c%s "$conf_file" 2>/dev/null || echo "0")
+		printf "• %-20s %s\n" "$iface" "${DIM}($size bytes)${NC}"
+	done <<<"$interfaces"
 }
 
-function cmd_down() {
-    local iface="${INTERFACE:-}"
-    [[ -z "$iface" ]] && iface=$(select_interface)
-    sudo $WG_CMD down "$iface"
-    success "Interface '$iface' is down."
+cmd_status() {
+	require_command wg "wireguard-tools"
+
+	printf "\n${BOLD}WireGuard interface status:${NC}\n"
+	if wg show 2>/dev/null | grep -q .; then
+		wg show
+	else
+		warn "No active WireGuard interfaces"
+	fi
+}
+
+cmd_up() {
+	require_command sudo "sudo"
+	local iface="${INTERFACE:-}"
+
+	if [[ -z "$iface" ]]; then
+		require_command fzf "fzf (https://github.com/junegunn/fzf)"
+		iface=$(select_interface)
+	fi
+
+	validate_interface "$iface"
+
+	log "Bringing up interface '$iface'"
+	debug "Command: sudo $WG_CMD up $iface"
+
+	if sudo "$WG_CMD" up "$iface" 2>/dev/null; then
+		success "Interface '$iface' is up"
+	else
+		die "Failed to bring up interface '$iface'. Check logs and permissions."
+	fi
+}
+
+cmd_down() {
+	require_command sudo "sudo"
+	local iface="${INTERFACE:-}"
+
+	if [[ -z "$iface" ]]; then
+		require_command fzf "fzf (https://github.com/junegunn/fzf)"
+		iface=$(select_interface)
+	fi
+
+	validate_interface "$iface"
+
+	log "Bringing down interface '$iface'"
+	debug "Command: sudo $WG_CMD down $iface"
+
+	if sudo "$WG_CMD" down "$iface" 2>/dev/null; then
+		success "Interface '$iface' is down"
+	else
+		die "Failed to bring down interface '$iface'. Check logs and permissions."
+	fi
 }
 
 # ===================================
-# MAIN LOGIC
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-i | --interface)
+			INTERFACE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--config-dir)
+			WG_CONF_DIR="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--wg-cmd)
+			WG_CMD="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
 # ===================================
 main() {
-    require_cmd "$WG_CMD"
-    require_cmd "fzf"
+	local command="${1:-help}"
+	parse_arguments "$@"
 
-    local cmd="${1:-}"
-    shift || true
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        -i | --interface)
-            INTERFACE="$2"
-            shift
-            ;;
-        --*)
-            abort "Unknown option: $1"
-            ;;
-        *)
-            [[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
-            ;;
-        esac
-        shift
-    done
-
-    case "$cmd" in
-    list) cmd_list ;;
-    on) cmd_up ;;
-    off) cmd_down ;;
-    help | "")
-        cmd_help
-        ;;
-    version)
-        cmd_version
-        ;;
-    *)
-        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
-        ;;
-    esac
+	# Execute command
+	case "$command" in
+	list)
+		cmd_list
+		;;
+	up)
+		print_summary
+		cmd_up
+		;;
+	down)
+		print_summary
+		cmd_down
+		;;
+	status)
+		cmd_status
+		;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
 }
 
 main "$@"
