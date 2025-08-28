@@ -93,7 +93,6 @@ build_aws_opts() {
 	else
 		AWS_OPTS+=(--profile "$PROFILE")
 		debug "Using profile authentication: $PROFILE"
-		echo "AWS_OPTS: ${AWS_OPTS[*]}"
 	fi
 }
 
@@ -127,7 +126,6 @@ confirm() {
 # COMMANDS
 # ===================================
 cmd_help() {
-	echo "testing"
 	cat <<EOF
 ${BOLD}${SCRIPT_NAME}${NC} - AWS S3 Hub management tool
 
