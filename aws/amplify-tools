@@ -2,87 +2,152 @@
 set -euo pipefail
 
 # ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="2.0.0"
+
+# ===================================
 # COLORS
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
 
 # ===================================
-# GLOBAL CONFIGURATION
+# CONFIGURATION
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
 DEBUG=false
-SILENT=false
+QUIET=false
+APP_ID=""
+PROFILE=""
+REGION=""
+ACCESS_KEY=""
+SECRET_KEY=""
+SESSION_TOKEN=""
+OUTPUT_FORMAT="json"
+OUTPUT_FILE=""
+
+# Default configuration
+readonly DEFAULT_REGION="${AWS_REGION:-ca-central-1}"
+readonly DEFAULT_PROFILE="${AWS_PROFILE:-default}"
 
 # ===================================
-# DEFAULT CONFIGURATION
+# LOGGING FUNCTIONS
 # ===================================
-REGION="${AWS_REGION:-ca-central-1}"
-PROFILE="${AWS_PROFILE:-default}"
-ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
-SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
-
-# ===================================
-# LOGGING
-# ===================================
-log() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${BLUE}==> $1${NC}"
-	fi
-}
-warn() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${YELLOW}⚠️  $1${NC}" >&2
-	fi
-}
-success() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${GREEN}✓ $1${NC}"
-	fi
-}
-abort() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${RED}✗ $1${NC}" >&2
-	fi
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
 	exit 1
-}
-debug() {
-	if [ "$DEBUG" = "true" ]; then
-		echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
-	fi
 }
 
 # ===================================
 # UTILITIES
 # ===================================
-require_cmd() {
-	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+require_command() {
+	local cmd="$1" hint="${2:-$1}"
+	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
 }
 
-build_aws_opts() {
-	AWS_OPTS=(--region "$REGION")
+validate_app_id() {
+	local app_id="$1"
+	if [[ ! "$app_id" =~ ^[a-zA-Z0-9]{1,20}$ ]]; then
+		die "Invalid app ID: $app_id. Must be alphanumeric, 1-20 characters."
+	fi
+	debug "App ID validated: $app_id"
+}
+
+validate_output_file() {
+	local file="$1"
+	local dir
+	dir=$(dirname "$file")
+
+	if [[ ! -d "$dir" ]]; then
+		die "Output directory does not exist: $dir"
+	fi
+
+	if [[ ! -w "$dir" ]]; then
+		die "Output directory is not writable: $dir"
+	fi
+
+	if [[ -f "$file" && ! -w "$file" ]]; then
+		die "Output file exists but is not writable: $file"
+	fi
+
+	debug "Output file validated: $file"
+}
+
+build_aws_options() {
+	local region="${REGION:-$DEFAULT_REGION}"
+	local profile="${PROFILE:-$DEFAULT_PROFILE}"
+
+	AWS_OPTS=(--region "$region" --output json)
+
+	debug "Using region: $region"
+
 	if [[ -n "$ACCESS_KEY" && -n "$SECRET_KEY" ]]; then
 		export AWS_ACCESS_KEY_ID="$ACCESS_KEY"
 		export AWS_SECRET_ACCESS_KEY="$SECRET_KEY"
 		[[ -n "$SESSION_TOKEN" ]] && export AWS_SESSION_TOKEN="$SESSION_TOKEN"
+		debug "Using credentials from environment variables"
 	else
-		AWS_OPTS+=(--profile "$PROFILE")
+		AWS_OPTS+=(--profile "$profile")
+		debug "Using profile: $profile"
+	fi
+}
+
+output_json() {
+	local json_data="$1"
+
+	# Always output to terminal
+	echo "$json_data"
+
+	# Additionally save to file if specified
+	if [[ -n "$OUTPUT_FILE" ]]; then
+		validate_output_file "$OUTPUT_FILE"
+		echo "$json_data" >"$OUTPUT_FILE"
+		success "Output saved to: $OUTPUT_FILE"
 	fi
 }
 
 get_apps() {
-	aws amplify list-apps "${AWS_OPTS[@]}" --output json | jq -c '.apps[]'
+	debug "Fetching Amplify apps"
+	aws amplify list-apps "${AWS_OPTS[@]}" | jq -c '.apps[]'
 }
 
 get_branches() {
 	local app_id="$1"
-	aws amplify list-branches --app-id "$app_id" "${AWS_OPTS[@]}" --output json | jq -c '.branches'
+	debug "Fetching branches for app: $app_id"
+
+	# Add timeout to prevent hanging
+	if ! timeout 30 aws amplify list-branches --app-id "$app_id" "${AWS_OPTS[@]}" 2>/dev/null | jq -c '.branches'; then
+		debug "Failed to fetch branches for app: $app_id (timeout or error)"
+		return 1
+	fi
+}
+
+print_summary() {
+	[[ "$QUIET" == true ]] && return
+
+	printf "\n${BOLD}AWS Amplify CLI${NC}\n"
+	printf "Region:         %s\n" "${REGION:-$DEFAULT_REGION}"
+	printf "Profile:        %s\n" "${PROFILE:-$DEFAULT_PROFILE}"
+	[[ -n "$APP_ID" ]] && printf "App ID:         %s\n" "$APP_ID"
+	[[ -n "$OUTPUT_FILE" ]] && printf "Output File:    %s\n" "$OUTPUT_FILE"
+	printf "Output Format:  %s\n" "$OUTPUT_FORMAT"
 }
 
 # ===================================
@@ -90,39 +155,148 @@ get_branches() {
 # ===================================
 cmd_help() {
 	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+${BOLD}${SCRIPT_NAME}${NC} - AWS Amplify management tool
 
-Commands:
-  list                List Amplify apps and their branches
-  raw-apps            Output raw JSON from 'list-apps'
-  raw-branches        Output raw JSON from 'list-branches' (requires --app-id)
-  help                Show this help message
-  version             Show script version
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
 
-Options:
-  --app-id ID         Required for 'raw-branches'
-  --profile NAME      AWS named profile to use (default: \$AWS_PROFILE or 'default')
-  --region REGION     AWS region (default: \$AWS_REGION or 'ca-central-1')
-  --access-key KEY    AWS Access Key ID
-  --secret-key KEY    AWS Secret Access Key
-  --session-token TK  AWS Session Token (optional)
+${BOLD}COMMANDS:${NC}
+  ${GREEN}list${NC}            List Amplify apps with their branches
+  ${GREEN}apps${NC}            List raw Amplify apps JSON
+  ${GREEN}branches${NC}        List raw branches JSON for specific app
+  ${GREEN}validate${NC}        Validate AWS configuration and connectivity
+  ${GREEN}help${NC}            Show this help
+  ${GREEN}version${NC}         Show version
 
-Examples:
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--app-id${NC} <id>              App ID (required for branches command)
+  ${YELLOW}--profile${NC} <n>           AWS named profile (default: \$AWS_PROFILE or 'default')
+  ${YELLOW}--region${NC} <region>          AWS region (default: \$AWS_REGION or 'ca-central-1')
+  ${YELLOW}--access-key${NC} <key>         AWS Access Key ID
+  ${YELLOW}--secret-key${NC} <key>         AWS Secret Access Key
+  ${YELLOW}--session-token${NC} <token>    AWS Session Token (optional)
+  ${YELLOW}--output${NC} <path>            Save JSON output to file
+  ${YELLOW}--format${NC} <json|table>      Output format (default: json)
+  ${YELLOW}-q, --quiet${NC}                Minimize output
+  ${YELLOW}-d, --debug${NC}                Enable debug output
+  ${YELLOW}-h, --help${NC}                 Show help
+  ${YELLOW}-v, --version${NC}              Show version
+
+${BOLD}EXAMPLES:${NC}
+  # List all apps and branches
   $SCRIPT_NAME list --profile myprofile
-  $SCRIPT_NAME raw-branches --app-id abc123 --access-key ABC --secret-key XYZ --region us-west-2
+
+  # Get raw apps data
+  $SCRIPT_NAME apps --region us-west-2
+
+  # Get branches for specific app
+  $SCRIPT_NAME branches --app-id abc123xyz --output branches.json
+
+  # Use temporary credentials with file output
+  $SCRIPT_NAME list --access-key AKIA... --secret-key xyz... --region us-east-1 --output apps.json
+
+  # Validate configuration
+  $SCRIPT_NAME validate --profile production
 EOF
 }
 
-cmd_list() {
-	local apps_json
-	mapfile -t apps_json < <(get_apps)
-	if [[ ${#apps_json[@]} -eq 0 ]]; then
-		echo "[]"
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+cmd_validate() {
+	require_command aws "AWS CLI v2"
+	require_command jq "jq JSON processor"
+
+	build_aws_options
+	print_summary
+
+	log "Validating AWS configuration..."
+
+	# Test AWS connectivity
+	if aws sts get-caller-identity "${AWS_OPTS[@]}" >/dev/null 2>&1; then
+		success "AWS credentials are valid"
+	else
+		die "AWS credentials validation failed"
+	fi
+
+	# Test Amplify permissions
+	if aws amplify list-apps "${AWS_OPTS[@]}" --max-items 1 >/dev/null 2>&1; then
+		success "AWS Amplify permissions are valid"
+	else
+		die "AWS Amplify permissions validation failed"
+	fi
+}
+
+cmd_apps() {
+	require_command aws "AWS CLI v2"
+	require_command jq "jq JSON processor"
+
+	build_aws_options
+	print_summary
+
+	local apps_data
+	apps_data=$(get_apps | jq -s .)
+
+	if [[ "$apps_data" == "[]" ]]; then
+		[[ "$QUIET" != true ]] && warn "No Amplify apps found"
+		output_json "[]"
 		return
 	fi
 
-	echo "["
+	local app_count
+	app_count=$(echo "$apps_data" | jq 'length')
+	success "Found $app_count Amplify apps"
+
+	output_json "$apps_data"
+}
+
+cmd_branches() {
+	[[ -z "$APP_ID" ]] && die "App ID is required for branches command. Use --app-id <id>"
+
+	require_command aws "AWS CLI v2"
+	require_command jq "jq JSON processor"
+
+	validate_app_id "$APP_ID"
+	build_aws_options
+	print_summary
+
+	local branches_data
+	debug "Attempting to fetch branches for app: $APP_ID"
+	if ! branches_data=$(get_branches "$APP_ID"); then
+		die "Failed to fetch branches for app: $APP_ID"
+	fi
+
+	local branch_count
+	branch_count=$(echo "$branches_data" | jq 'length')
+	success "Found $branch_count branches for app: $APP_ID"
+
+	output_json "$branches_data"
+}
+
+cmd_list() {
+	require_command aws "AWS CLI v2"
+	require_command jq "jq JSON processor"
+
+	build_aws_options
+	print_summary
+
+	local apps_json
+	mapfile -t apps_json < <(get_apps)
+
+	if [[ ${#apps_json[@]} -eq 0 ]]; then
+		[[ "$QUIET" != true ]] && warn "No Amplify apps found"
+		output_json "[]"
+		return
+	fi
+
+	success "Processing ${#apps_json[@]} Amplify apps"
+
+	local combined_output=""
+	combined_output+="["
 	local first=true
+	local processed=0
+
 	for app_json in "${apps_json[@]}"; do
 		local app_id app_name domain repo platform create_time update_time status prod_branch
 		app_id=$(jq -r '.appId' <<<"$app_json")
@@ -134,12 +308,23 @@ cmd_list() {
 		update_time=$(jq -r '.updateTime' <<<"$app_json")
 		status=$(jq -r '.productionBranch.status // "UNKNOWN"' <<<"$app_json")
 		prod_branch=$(jq -r '.productionBranch.branchName // "none"' <<<"$app_json")
-		branches_json=$(get_branches "$app_id")
 
-		[[ "$first" == false ]] && echo ","
+		debug "Processing app: $app_name ($app_id)"
+
+		local branches_data
+		debug "Attempting to fetch branches for app: $app_id"
+		if ! branches_data=$(get_branches "$app_id"); then
+			warn "Failed to fetch branches for app: $app_name ($app_id)"
+			branches_data="[]"
+		else
+			debug "Successfully fetched branches for app: $app_name"
+		fi
+
+		[[ "$first" == false ]] && combined_output+=","
 		first=false
 
-		jq -n \
+		local app_json_output
+		app_json_output=$(jq -n \
 			--arg id "$app_id" \
 			--arg name "$app_name" \
 			--arg domain "$domain" \
@@ -149,96 +334,127 @@ cmd_list() {
 			--arg update "$update_time" \
 			--arg status "$status" \
 			--arg prod_branch "$prod_branch" \
-			--argjson branches "$branches_json" \
+			--argjson branches "$branches_data" \
 			'{
-        appId: $id,
-        name: $name,
-        repository: $repo,
-        defaultDomain: $domain,
-        platform: $platform,
-        status: $status,
-        productionBranch: $prod_branch,
-        createTime: $create,
-        updateTime: $update,
-        branches: $branches
-      }'
+				appId: $id,
+				name: $name,
+				repository: $repo,
+				defaultDomain: $domain,
+				platform: $platform,
+				status: $status,
+				productionBranch: $prod_branch,
+				createTime: $create,
+				updateTime: $update,
+				branches: $branches
+			}')
+		combined_output+="$app_json_output"
+		processed=$((processed + 1))
 	done
-	echo "]"
-}
 
-cmd_raw_apps() {
-	get_apps | jq -s .
-}
+	combined_output+="]"
+	success "Processed $processed apps successfully"
 
-cmd_raw_branches() {
-	if [[ -z "${APP_ID:-}" ]]; then
-		echo "Error: --app-id is required with 'raw-branches'"
-		exit 1
-	fi
-	get_branches "$APP_ID"
-}
-
-cmd_version() {
-	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+	output_json "$combined_output"
 }
 
 # ===================================
-# MAIN LOGIC
+# ARGUMENT PARSING
 # ===================================
-main() {
-	local cmd="${1:-}"
-	shift || true
-
+parse_arguments() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--app-id)
-			APP_ID="$2"
-			shift
+			APP_ID="${2:?Missing value for $1}"
+			shift 2
 			;;
 		--profile)
-			PROFILE="$2"
-			shift
+			PROFILE="${2:?Missing value for $1}"
+			shift 2
 			;;
 		--region)
-			REGION="$2"
-			shift
+			REGION="${2:?Missing value for $1}"
+			shift 2
 			;;
 		--access-key)
-			ACCESS_KEY="$2"
-			shift
+			ACCESS_KEY="${2:?Missing value for $1}"
+			shift 2
 			;;
 		--secret-key)
-			SECRET_KEY="$2"
-			shift
+			SECRET_KEY="${2:?Missing value for $1}"
+			shift 2
 			;;
 		--session-token)
-			SESSION_TOKEN="$2"
+			SESSION_TOKEN="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--output)
+			OUTPUT_FILE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--format)
+			OUTPUT_FORMAT="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
 			shift
 			;;
-		--*)
-			abort "Unknown option: $1"
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
 			;;
 		*)
-			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			shift
 			;;
 		esac
-		shift
 	done
+}
 
-	build_aws_opts
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
 
-	case "$cmd" in
-	list) cmd_list ;;
-	raw-apps) cmd_raw_apps ;;
-	raw-branches) cmd_raw_branches ;;
-	help | "")
+	# Validate output format
+	if [[ "$OUTPUT_FORMAT" != "json" && "$OUTPUT_FORMAT" != "table" ]]; then
+		die "Invalid output format: $OUTPUT_FORMAT. Use 'json' or 'table'"
+	fi
+
+	# Execute command
+	case "$command" in
+	list)
+		cmd_list
+		;;
+	apps)
+		cmd_apps
+		;;
+	branches)
+		cmd_branches
+		;;
+	validate)
+		cmd_validate
+		;;
+	help)
 		cmd_help
 		;;
 	version)
 		cmd_version
 		;;
 	*)
-		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help' for available commands."
 		;;
 	esac
 }

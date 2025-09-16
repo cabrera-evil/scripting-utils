@@ -2,26 +2,34 @@
 set -euo pipefail
 
 # ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.1.0"
+
+# ===================================
 # COLORS
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
 
 # ===================================
-# GLOBAL CONFIGURATION
+# CONFIGURATION
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
 DEBUG=false
-SILENT=false
+QUIET=false
 
-# ===================================
-# DEFAULT CONFIGURATION
-# ===================================
+# Default configuration
 BACKUP_DIR="$HOME/Backups/system"
 DESTINATION="$HOME"
 TMP_DIR="/tmp"
@@ -30,7 +38,6 @@ NOTIFY=true
 VERBOSE=false
 COMPRESSION_LEVEL="-0"
 OUTPUT_NAME=""
-ZIP_NAME=""
 DUNST_ID=91190
 DIRS_TO_BACKUP=(
 	"$HOME/artifacts"
@@ -56,40 +63,23 @@ EXCLUDE_PATTERN=(
 )
 
 # ===================================
-# LOGGING
+# LOGGING FUNCTIONS
 # ===================================
-log() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${BLUE}==> $1${NC}"
-	fi
-}
-warn() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${YELLOW}⚠️  $1${NC}" >&2
-	fi
-}
-success() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${GREEN}✓ $1${NC}"
-	fi
-}
-abort() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${RED}✗ $1${NC}" >&2
-	fi
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
 	exit 1
-}
-debug() {
-	if [ "$DEBUG" = "true" ]; then
-		echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
-	fi
 }
 
 # ========================
 # UTILITIES
 # ========================
 require_cmd() {
-	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+	command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed or not in PATH."
 }
 
 notify() {
@@ -107,33 +97,38 @@ notify_progress() {
 # ===================================
 cmd_help() {
 	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+${BOLD}${SCRIPT_NAME}${NC} - A simple backup and restore utility
 
-Commands:
-  create              Create a backup
-  share               Share latest backup via HTTP
-  download            Download and restore from remote backup server
-  restore             Restore from local .zip backup
-  list                List local backup files
-  help                Show this help message
-  version             Show script version
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
 
-Options:
-  --dir <DIR>         Directory to store backups (default: $BACKUP_DIR)
-  --file <FILE>       Path to the local zip file to restore from
-  --dest <DIR>        Restore destination directory (default: $DESTINATION)
-  --tmp <DIR>         Temp working directory (default: $TMP_DIR)
-  --ip                IP address of the remote server to download the backup from
-  --port <PORT>       HTTP port to share/download (default: $PORT)
-  --output <NAME>     Override output backup file name
-  --zip-name <NAME>   Expected zip file to download (default: auto)
-  --dirs <D1,D2>      Comma-separated directories to back up
-  --exclude <PATTS>   Comma-separated exclude patterns
-  --compress <0|9>    Zip compression level (default: 0)
-  --no-notify         Disable dunstify popups
-  --verbose           Show zip/rsync output live
+${BOLD}COMMANDS:${NC}
+  ${GREEN}create${NC}              Create a backup
+  ${GREEN}share${NC}               Share latest backup via HTTP
+  ${GREEN}download${NC}            Download and restore from remote backup server
+  ${GREEN}restore${NC}             Restore from local .zip backup
+  ${GREEN}list${NC}                List local backup files
+  ${GREEN}help${NC}                Show this help message
+  ${GREEN}version${NC}             Show script version
 
-Examples:
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--dir <DIR>${NC}                   Directory to store backups (default: $BACKUP_DIR)
+  ${YELLOW}--file <FILE>${NC}                 Path to the local zip file to restore from
+  ${YELLOW}--dest <DIR>${NC}                  Restore destination directory (default: $DESTINATION)
+  ${YELLOW}--tmp <DIR>${NC}                   Temp working directory (default: $TMP_DIR)
+  ${YELLOW}--ip${NC}                          IP address of the remote server to download the backup from
+  ${YELLOW}--port <PORT>${NC}                 HTTP port to share/download (default: $PORT)
+  ${YELLOW}--output <NAME>${NC}               Override output backup file name
+  ${YELLOW}--dirs <D1,D2>${NC}                Comma-separated directories to back up
+  ${YELLOW}--exclude <PATTS>${NC}             Comma-separated exclude patterns
+  ${YELLOW}--compress <0|9>${NC}              Zip compression level (default: 0)
+  ${YELLOW}--no-notify${NC}                   Disable dunstify popups
+  ${YELLOW}-q, --quiet${NC}                   Minimize output
+  ${YELLOW}-d, --debug${NC}                   Enable debug output
+  ${YELLOW}-h, --help${NC}                    Show help
+  ${YELLOW}-v, --version${NC}                 Show version
+
+${BOLD}EXAMPLES:${NC}
   $SCRIPT_NAME create --dir ~/Backups --dest ~/Restore
   $SCRIPT_NAME share
   $SCRIPT_NAME download
@@ -185,10 +180,10 @@ cmd_create() {
 cmd_share() {
 	require_cmd python3
 	require_cmd ln
-	[[ ! -d "$BACKUP_DIR" ]] && abort "Backup directory not found: $BACKUP_DIR"
+	[[ ! -d "$BACKUP_DIR" ]] && die "Backup directory not found: $BACKUP_DIR"
 	local latest_zip
 	latest_zip=$(ls -1t "$BACKUP_DIR"/backup-*.zip 2>/dev/null | head -n 1)
-	[[ -z "$latest_zip" ]] && abort "No backup files to share."
+	[[ -z "$latest_zip" ]] && die "No backup files to share."
 	local filename
 	filename=$(basename "$latest_zip")
 	local share_dir="$TMP_DIR/backup_share"
@@ -216,7 +211,7 @@ EOF
 cmd_restore() {
 	local file="$1"
 	[[ ! -f "$file" ]] && {
-		abort "File not found: $file"
+		die "File not found: $file"
 	}
 	notify "Restoring from $file"
 	unzip "$file" -d "$TMP_DIR"
@@ -248,7 +243,7 @@ cmd_download() {
 	local out_path="$TMP_DIR"
 	log "⬇Downloading from: $url"
 	wget -q -O "$out_path" "$url" || {
-		abort "Download failed"
+		die "Download failed"
 	}
 	cmd_restore "$out_path"
 }
@@ -259,16 +254,13 @@ cmd_list() {
 }
 
 cmd_version() {
-	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
 }
 
 # ===================================
-# MAIN LOGIC
+# ARGUMENT PARSING
 # ===================================
-main() {
-	local cmd="${1:-}"
-	shift || true
-
+parse_arguments() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--dir)
@@ -299,10 +291,6 @@ main() {
 			OUTPUT_NAME="$2"
 			shift
 			;;
-		--zip-name)
-			ZIP_NAME="$2"
-			shift
-			;;
 		--dirs)
 			IFS=',' read -ra DIRS_TO_BACKUP <<<"$2"
 			shift
@@ -319,40 +307,59 @@ main() {
 			NOTIFY=false
 			shift
 			;;
-		--verbose)
-			VERBOSE=true
+		-q | --quiet)
+			QUIET=true
 			shift
 			;;
-		--*)
-			abort "Unknown option: $1"
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
 			;;
 		*)
-			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			shift
 			;;
 		esac
-		shift
 	done
+}
 
-	case "$cmd" in
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	case "$command" in
 	create) cmd_create ;;
 	share) cmd_share ;;
 	download)
-		[[ -z "$IP_ADDRESS" ]] && abort "Missing --ip option for download command"
+		[[ -z "$IP_ADDRESS" ]] && die "Missing --ip option for download command"
 		cmd_download "$IP_ADDRESS"
 		;;
 	restore)
-		[[ -z "$ZIP_FILE" ]] && abort "Missing --file option for restore command"
+		[[ -z "$ZIP_FILE" ]] && die "Missing --file option for restore command"
 		cmd_restore "$ZIP_FILE"
 		;;
 	list) cmd_list ;;
-	help | "")
+	help)
 		cmd_help
 		;;
 	version)
 		cmd_version
 		;;
 	*)
-		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
 		;;
 	esac
 }

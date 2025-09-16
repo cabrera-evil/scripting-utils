@@ -2,247 +2,352 @@
 set -euo pipefail
 
 # ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="2.0.1"
+
+# ===================================
 # COLORS
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
 
 # ===================================
-# GLOBAL CONFIGURATION
+# CONFIGURATION
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
 DEBUG=false
-SILENT=false
-
-# ===================================
-# DEFAULT CONFIGURATION
-# ===================================
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null ||
-	git config --get remote.origin.url | sed -E 's/.*[:\/](.+\/.+)\.git/\1/')"
+QUIET=false
+REPO=""
 ENV=""
 FILE="secrets.yaml"
 INLINE=""
+CONFIRM_YES=false
 declare -A SECRETS
 
 # ===================================
-# LOGGING
+# LOGGING FUNCTIONS
 # ===================================
-log() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${BLUE}==> $1${NC}"
-	fi
-}
-warn() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${YELLOW}⚠️  $1${NC}" >&2
-	fi
-}
-success() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${GREEN}✓ $1${NC}"
-	fi
-}
-abort() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${RED}✗ $1${NC}" >&2
-	fi
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
 	exit 1
-}
-debug() {
-	if [ "$DEBUG" = "true" ]; then
-		echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
-	fi
 }
 
 # ===================================
 # UTILITIES
 # ===================================
-require_cmd() {
-	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+require_command() {
+	local cmd="$1" hint="${2:-$1}"
+	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
 }
 
-function log_summary() {
-	log -e "\nGitHub Secrets CLI"
-	echo "──────────────────────────────"
-	log "Repo:        $REPO"
-	[[ -n "$ENV" ]] && log "Environment: $ENV"
-	[[ -n "${FILE:-}" && -f "$FILE" ]] && log "File:        $FILE"
-	[[ -n "${INLINE:-}" ]] && log "Inline:      $INLINE"
-	echo "──────────────────────────────"
+detect_repo() {
+	if [[ -n "$REPO" ]]; then
+		echo "$REPO"
+		return
+	fi
+	if command -v gh >/dev/null 2>&1 &&
+		gh repo view --json nameWithOwner -q .nameWithOwner >/dev/null 2>&1; then
+		gh repo view --json nameWithOwner -q .nameWithOwner
+		return
+	fi
+	local url
+	url="$(git config --get remote.origin.url || true)"
+	[[ -z "$url" ]] && die "Cannot detect repository. Use --repo <owner/repo>."
+	url="${url%.git}"
+	if [[ "$url" =~ github\.com[:/]{1}([^/]+/[^/]+)$ ]]; then
+		echo "${BASH_REMATCH[1]}"
+	else
+		die "Unsupported remote URL '$url'. Pass --repo <owner/repo>."
+	fi
 }
 
-function load_secrets() {
-	if [[ -n "${FILE:-}" && -f "$FILE" ]]; then
-		while IFS= read -r key; do
-			# Install yq if not already installed
-			if ! command -v yq &>/dev/null; then
-				log "🔧 Installing yq..."
-				if command -v brew &>/dev/null; then
-					brew install yq
-				elif command -v apt &>/dev/null; then
-					sudo apt install -y yq
-				else
-					abort "Unsupported package manager. Please install yq manually."
-				fi
-			fi
-			# Parse the YAML file
-			value="$(yq -r ".\"$key\"" "$FILE")"
-			if [[ "$value" == "null" ]]; then
-				log "Skipping key '$key' (no value found)"
-				continue
-			fi
-			SECRETS["$key"]="$value"
-		done < <(yq -r 'keys[]' "$FILE")
-	fi
+print_summary() {
+	printf "\n${BOLD}GitHub Secrets CLI${NC}\n"
+	printf "Repo:        %s\n" "$REPO"
+	if [[ -n "$ENV" ]]; then printf "Environment: %s\n" "$ENV"; fi
+	if [[ -n "$FILE" ]]; then printf "File:        %s\n" "$FILE"; fi
+	if [[ -n "$INLINE" ]]; then printf "Inline:      %s\n" "$INLINE"; fi
+}
 
-	if [[ -n "${INLINE:-}" ]]; then
-		IFS=',' read -ra PAIRS <<<"$INLINE"
-		for pair in "${PAIRS[@]}"; do
-			key="${pair%%=*}"
-			value="${pair#*=}"
-			SECRETS["$key"]="$value"
-		done
-	fi
+is_yaml_file() {
+	case "${FILE##*.}" in yml | yaml) return 0 ;; *) return 1 ;; esac
+}
 
-	if [[ "${#SECRETS[@]}" -eq 0 ]]; then
-		abort "No secrets found from YAML file or inline input."
+load_secrets_from_yaml() {
+	require_command yq "yq (https://mikefarah.gitbook.io/yq/#install)"
+	# Only top-level scalar keys
+	mapfile -t keys < <(yq -r 'to_entries | map(select(.value|type=="string" or type=="number" or type=="bool")) | .[].key' "$FILE")
+	for key in "${keys[@]}"; do
+		local value
+		value="$(yq -r ".\"$key\"" "$FILE")"
+		[[ "$value" == "null" ]] && {
+			debug "Skipping '$key' (null)"
+			continue
+		}
+		SECRETS["$key"]="$value"
+	done
+}
+
+load_secrets_from_envfile() {
+	while IFS= read -r line; do
+		[[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+		if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			local k="${BASH_REMATCH[1]}" v="${BASH_REMATCH[2]}"
+			# strip surrounding quotes
+			v="${v%\"}"
+			v="${v#\"}"
+			v="${v%\'}"
+			v="${v#\'}"
+			SECRETS["$k"]="$v"
+		else
+			warn "Skipping invalid line: $line"
+		fi
+	done <"$FILE"
+}
+
+load_secrets_inline() {
+	IFS=',' read -ra pairs <<<"$INLINE"
+	for pair in "${pairs[@]}"; do
+		[[ -z "$pair" ]] && continue
+		if [[ "$pair" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			SECRETS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+		else
+			warn "Skipping invalid inline pair: $pair"
+		fi
+	done
+}
+
+load_secrets() {
+	if [[ -n "$FILE" && -f "$FILE" ]]; then
+		if is_yaml_file; then load_secrets_from_yaml; else load_secrets_from_envfile; fi
 	fi
+	[[ -n "$INLINE" ]] && load_secrets_inline
+	((${#SECRETS[@]} > 0)) || die "No secrets found. Provide --file or --inline."
+}
+
+confirm() {
+	[[ "$CONFIRM_YES" == true ]] && return 0
+	read -r -p "${BOLD}Are you sure? (y/N): ${NC}" ans
+	[[ "$ans" == "y" || "$ans" == "Y" ]]
+}
+
+# Pretty aligned progress: key padding
+pad_right() {
+	local s="$1" width="$2"
+	printf "%-*s" "$width" "$s"
 }
 
 # ===================================
 # COMMANDS
 # ===================================
-function cmd_help() {
+cmd_help() {
 	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+${BOLD}${SCRIPT_NAME}${NC} - Manage GitHub repo/environment secrets
 
-Commands:
-  apply           Set secrets from file or inline
-  delete          Delete secrets parsed from file or inline
-  list            List secrets in the repo or environment
-  purge           Delete ALL secrets from the repo or environment (danger!)
-  help            Show this help message
-  version         Show script version
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
 
-Options:
-  -r, --repo       GitHub repo (owner/repo). Default: $REPO
-  -e, --env        Environment name (for environment-level secrets)
-  -f, --file       File with secrets in KEY=VALUE format (default: $FILE)
-  -i, --inline     Inline secrets (comma-separated: FOO=bar,BAR=baz)
-  --yes            Skip confirmation prompt for purge
+${BOLD}COMMANDS:${NC}
+  ${GREEN}apply${NC}    Create/update secrets from file/inline
+  ${GREEN}delete${NC}   Delete secrets from file/inline
+  ${GREEN}list${NC}     List secrets in repo or environment
+  ${GREEN}purge${NC}    Delete ALL secrets in scope (danger)
+  ${GREEN}help${NC}     Show this help
+  ${GREEN}version${NC}  Show version
 
-Examples:
-  $SCRIPT_NAME apply --file .env.production
-  $SCRIPT_NAME delete --inline GH_TOKEN=abc,NPM_TOKEN=xyz
-  $SCRIPT_NAME purge --env production --yes
-  $SCRIPT_NAME list
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}-r, --repo${NC} owner/repo            Target repository
+  ${YELLOW}-e, --env${NC}  environment           Target environment
+  ${YELLOW}-f, --file${NC} path                  Secrets file (.yaml/.yml or .env)
+  ${YELLOW}-i, --inline${NC} "K=V,K2=V2"         Inline secrets
+  ${YELLOW}--yes${NC}                            Skip confirmation (for purge)
+  ${YELLOW}-q, --quiet${NC}                      Minimize output
+  ${YELLOW}-d, --debug${NC}                      Enable debug
+  ${YELLOW}-h, --help${NC}                       Show help
+  ${YELLOW}-v, --version${NC}                    Show version
 EOF
 }
 
-function cmd_apply() {
-	for key in "${!SECRETS[@]}"; do
-		local value="${SECRETS[$key]}"
-		if [[ -n "$ENV" ]]; then
-			log "Setting env secret: $key"
-			gh secret set "$key" --env "$ENV" --body "$value" --repo "$REPO"
-		else
-			log "Setting repo secret: $key"
-			gh secret set "$key" --body "$value" --repo "$REPO"
-		fi
-	done
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
 }
 
-function cmd_delete() {
-	for key in "${!SECRETS[@]}"; do
+cmd_apply() {
+	require_command gh "gh (https://cli.github.com/)"
+	mapfile -t keys < <(printf "%s\n" "${!SECRETS[@]}" | sort)
+	local maxlen=0 k
+	for k in "${keys[@]}"; do ((${#k} > maxlen)) && maxlen=${#k}; done
+	printf "\n${BOLD}Applying %d secret(s)${NC}\n" "${#keys[@]}"
+	for k in "${keys[@]}"; do
+		local label="Setting secret:"
+		printf "• %s %s  " "$(pad_right "$label" 16)" "$(pad_right "$k" "$maxlen")"
 		if [[ -n "$ENV" ]]; then
-			log "Deleting env secret: $key"
-			gh secret delete "$key" --env "$ENV" --repo "$REPO" || true
+			if gh secret set "$k" --env "$ENV" --body "${SECRETS[$k]}" --repo "$REPO" >/dev/null 2>&1; then
+				printf "${GREEN}ok${NC}\n"
+			else
+				printf "${RED}fail${NC}\n"
+			fi
 		else
-			log "Deleting repo secret: $key"
-			gh secret delete "$key" --repo "$REPO" || true
+			if gh secret set "$k" --body "${SECRETS[$k]}" --repo "$REPO" >/dev/null 2>&1; then
+				printf "${GREEN}ok${NC}\n"
+			else
+				printf "${RED}fail${NC}\n"
+			fi
 		fi
 	done
+	success "Secrets applied."
 }
 
-function cmd_list() {
+cmd_delete() {
+	require_command gh "gh (https://cli.github.com/)"
+	mapfile -t keys < <(printf "%s\n" "${!SECRETS[@]}" | sort)
+	local maxlen=0 k
+	for k in "${keys[@]}"; do ((${#k} > maxlen)) && maxlen=${#k}; done
+
+	printf "\n${BOLD}Deleting %d secret(s)${NC}\n" "${#keys[@]}"
+	for k in "${keys[@]}"; do
+		local label="Deleting:"
+		printf "• %s %s  " "$(pad_right "$label" 16)" "$(pad_right "$k" "$maxlen")"
+		if [[ -n "$ENV" ]]; then
+			if gh secret delete "$k" --env "$ENV" --repo "$REPO" >/dev/null 2>&1; then
+				printf "${GREEN}ok${NC}\n"
+			else
+				printf "${YELLOW}skip${NC}\n"
+			fi
+		else
+			if gh secret delete "$k" --repo "$REPO" >/dev/null 2>&1; then
+				printf "${GREEN}ok${NC}\n"
+			else
+				printf "${YELLOW}skip${NC}\n"
+			fi
+		fi
+	done
+	success "Delete completed."
+}
+
+cmd_list() {
+	require_command gh "gh (https://cli.github.com/)"
 	if [[ -n "$ENV" ]]; then
-		log "Environment secrets for '$ENV':"
+		printf "\n${BOLD}Environment secrets for '%s' in '%s'${NC}\n" "$ENV" "$REPO"
 		gh secret list --env "$ENV" --repo "$REPO"
 	else
-		log "Repository secrets:"
+		printf "\n${BOLD}Repository secrets for '%s'${NC}\n" "$REPO"
 		gh secret list --repo "$REPO"
 	fi
 }
 
-function cmd_purge() {
-	local scope=("--repo" "$REPO")
+cmd_purge() {
+	require_command gh "gh (https://cli.github.com/)"
+	local scope=(--repo "$REPO")
 	[[ -n "$ENV" ]] && scope+=(--env "$ENV")
-
-	log "This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }repo '$REPO'."
-	if [[ "${CONFIRM_YES:-}" != "true" ]]; then
-		read -r -p "Are you sure? (y/N): " confirm
-		[[ "$confirm" != "y" && "$confirm" != "Y" ]] && {
-			abort "Aborted"
-		}
-	fi
-
-	mapfile -t secrets < <(gh secret list "${scope[@]}" --json name -q '.[].name')
-	if [[ ${#secrets[@]} -eq 0 ]]; then
+	log "This will permanently delete ALL secrets in ${ENV:+environment '$ENV' of }'$REPO'."
+	confirm || die "Aborted."
+	mapfile -t names < <(gh secret list "${scope[@]}" --json name -q '.[].name')
+	((${#names[@]})) || {
 		log "No secrets to delete."
 		return
-	fi
+	}
+	local maxlen=0 n
+	for n in "${names[@]}"; do ((${#n} > maxlen)) && maxlen=${#n}; done
+	printf "\n${BOLD}Purging %d secret(s)${NC}\n" "${#names[@]}"
+	for n in "${names[@]}"; do
+		printf "• %s %s  " "$(pad_right "Deleting:" 16)" "$(pad_right "$n" "$maxlen")"
+		if gh secret delete "$n" "${scope[@]}" >/dev/null 2>&1; then
+			printf "${GREEN}ok${NC}\n"
+		else
+			printf "${YELLOW}skip${NC}\n"
+		fi
+	done
+	success "Purge completed."
+}
 
-	for key in "${secrets[@]}"; do
-		log "Deleting secret: $key"
-		gh secret delete "$key" "${scope[@]}" || true
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-r | --repo)
+			REPO="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-e | --env)
+			ENV="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-f | --file)
+			FILE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-i | --inline)
+			INLINE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--yes)
+			CONFIRM_YES=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
 	done
 }
 
 # ===================================
-# MAIN LOGIC
+# MAIN
 # ===================================
 main() {
-	cmd="${1:-}"
-	shift || true
+	local command="${1:-help}"
+	parse_arguments "$@"
 
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-		-r | --repo)
-			REPO="$2"
-			;;
-		-e | --env)
-			ENV="$2"
-			;;
-		-f | --file)
-			FILE="$2"
-			;;
-		-i | --inline)
-			INLINE="$2"
-			;;
-		--yes) CONFIRM_YES=true ;;
-		--*)
-			abort "Unknown option: $1"
-			;;
-		*)
-			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
-			;;
-		esac
-		shift
-	done
+	# Execute command	parse_arguments "$@"
+	REPO="$(detect_repo)"
 
-	case "$cmd" in
+	# Execute command
+	case "$command" in
 	apply)
-		log_summary
+		print_summary
 		load_secrets
 		cmd_apply
 		;;
 	delete)
-		log_summary
+		print_summary
 		load_secrets
 		cmd_delete
 		;;
@@ -250,17 +355,17 @@ main() {
 		cmd_list
 		;;
 	purge)
-		log_summary
+		print_summary
 		cmd_purge
 		;;
-	help | "")
+	help)
 		cmd_help
 		;;
 	version)
 		cmd_version
 		;;
 	*)
-		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
 		;;
 	esac
 }

@@ -1,0 +1,651 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="2.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+INPUT_FILE=""
+OUTPUT_FILE=""
+NAMESPACE=""
+RESOURCE_NAME=""
+COPY_TO_CLIPBOARD=false
+RESOURCE_TYPE="secret"
+SECRET_TYPE="Opaque"
+
+# Default configuration
+readonly DEFAULT_SECRET_TYPE="Opaque"
+readonly DEFAULT_RESOURCE_TYPE="secret"
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+require_command() {
+	local cmd="$1" hint="${2:-$1}"
+	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
+}
+
+print_summary() {
+	printf "\n${BOLD}Kubernetes Resource CLI${NC}\n"
+	printf "Input File:     %s\n" "$INPUT_FILE"
+	if [[ -n "$OUTPUT_FILE" ]]; then
+		printf "Output File:    %s\n" "$OUTPUT_FILE"
+	fi
+	printf "Resource Type:  %s\n" "$RESOURCE_TYPE"
+	printf "Namespace:      %s\n" "$NAMESPACE"
+	printf "Resource Name:  %s\n" "${RESOURCE_NAME:-${NAMESPACE}-${RESOURCE_TYPE}}"
+	if [[ "$RESOURCE_TYPE" == "secret" ]]; then
+		printf "Secret Type:    %s\n" "$SECRET_TYPE"
+	fi
+	printf "Copy to CB:     %s\n" "${COPY_TO_CLIPBOARD}"
+}
+
+validate_input_file() {
+	local file="$1"
+	if [[ ! -f "$file" ]]; then
+		die "Input file not found: $file"
+	fi
+	if [[ ! -r "$file" ]]; then
+		die "Input file not readable: $file"
+	fi
+	debug "Input file validated: $file"
+}
+
+validate_namespace() {
+	local ns="$1"
+	if [[ ! "$ns" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+		die "Invalid namespace: $ns. Must be lowercase alphanumeric with hyphens."
+	fi
+	debug "Namespace validated: $ns"
+}
+
+detect_file_type() {
+	local file="$1"
+
+	# Check if it's a YAML file with Secret or ConfigMap kind
+	if grep -q "^kind: Secret" "$file" 2>/dev/null; then
+		echo "secret"
+	elif grep -q "^kind: ConfigMap" "$file" 2>/dev/null; then
+		echo "configmap"
+	else
+		# Check if it looks like an env file
+		if grep -qE "^[A-Za-z_][A-Za-z0-9_]*=" "$file" 2>/dev/null; then
+			echo "env"
+		else
+			echo "unknown"
+		fi
+	fi
+}
+
+detect_clipboard_tool() {
+	if command -v xclip &>/dev/null; then
+		echo "xclip"
+	elif command -v pbcopy &>/dev/null; then
+		echo "pbcopy"
+	elif command -v wl-copy &>/dev/null; then
+		echo "wl-copy"
+	else
+		die "No clipboard utility found. Install: xclip (Linux), pbcopy (macOS), or wl-copy (Wayland)"
+	fi
+}
+
+copy_to_clipboard() {
+	local content="$1"
+	local tool
+	tool=$(detect_clipboard_tool)
+
+	debug "Using clipboard tool: $tool"
+	debug "Content length: ${#content} characters"
+
+	case "$tool" in
+	xclip)
+		echo "$content" | xclip -selection clipboard
+		success "Resource copied to clipboard via xclip"
+		;;
+	pbcopy)
+		echo "$content" | pbcopy
+		success "Resource copied to clipboard via pbcopy"
+		;;
+	wl-copy)
+		echo "$content" | wl-copy
+		success "Resource copied to clipboard via wl-copy"
+		;;
+	esac
+}
+
+parse_env_file() {
+	local env_file="$1"
+	local -A vars
+	local line_count=0
+	local valid_count=0
+
+	debug "Parsing environment file: $env_file"
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		((line_count++))
+
+		# Skip empty lines and comments
+		if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+			debug "Skipping line $line_count (empty or comment): $line"
+			continue
+		fi
+
+		# Parse key=value pairs
+		if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+			local key="${BASH_REMATCH[1]}"
+			local value="${BASH_REMATCH[2]}"
+
+			# Remove quotes if present
+			value="${value%\"}"
+			value="${value#\"}"
+			value="${value%\'}"
+			value="${value#\'}"
+
+			vars["$key"]="$value"
+			((valid_count++))
+			debug "Parsed: $key=***"
+		else
+			warn "Skipping invalid line $line_count: $line"
+		fi
+	done <"$env_file"
+
+	debug "Parsed $valid_count valid entries from $line_count lines"
+
+	if [[ $valid_count -eq 0 ]]; then
+		die "No valid key=value pairs found in $env_file"
+	fi
+
+	# Output the associative array keys and values
+	for key in "${!vars[@]}"; do
+		printf "%s=%s\n" "$key" "${vars[$key]}"
+	done
+}
+
+extract_yaml_metadata() {
+	local yaml_file="$1"
+	local name namespace
+
+	# Extract the name and namespace from the YAML file
+	name=$(awk '/^  name:/ {print $2}' "$yaml_file" | head -1)
+	namespace=$(awk '/^  namespace:/ {print $2}' "$yaml_file" | head -1)
+
+	if [[ -z "$name" ]]; then
+		die "Could not extract name from $yaml_file"
+	fi
+
+	echo "$name" "$namespace"
+}
+
+parse_secret_yaml() {
+	local secret_file="$1"
+	local -A secrets
+
+	debug "Parsing secret YAML file: $secret_file"
+
+	# Extract data section and decode base64 values
+	local in_data_section=false
+	local entry_count=0
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" == "data:" ]]; then
+			in_data_section=true
+			continue
+		fi
+
+		# If we hit another top-level section, exit data section
+		if [[ "$in_data_section" == true && "$line" =~ ^[a-zA-Z] ]]; then
+			break
+		fi
+
+		# Process data entries
+		if [[ "$in_data_section" == true && "$line" =~ ^[[:space:]]+([a-zA-Z0-9_]+):[[:space:]]+([a-zA-Z0-9+/=]+)$ ]]; then
+			local key="${BASH_REMATCH[1]}"
+			local encoded_value="${BASH_REMATCH[2]}"
+
+			# Decode the base64 value
+			local decoded_value
+			decoded_value=$(echo "$encoded_value" | base64 --decode 2>/dev/null || echo "$encoded_value")
+
+			secrets["$key"]="$decoded_value"
+			((entry_count++))
+			debug "Decoded: $key=***"
+		fi
+	done <"$secret_file"
+
+	debug "Decoded $entry_count entries from secret"
+
+	if [[ $entry_count -eq 0 ]]; then
+		die "No valid data entries found in $secret_file"
+	fi
+
+	# Output the decoded key=value pairs
+	for key in "${!secrets[@]}"; do
+		printf "%s=%s\n" "$key" "${secrets[$key]}"
+	done
+}
+
+parse_configmap_yaml() {
+	local configmap_file="$1"
+	local -A vars
+
+	debug "Parsing configmap YAML file: $configmap_file"
+
+	# Extract data section
+	local in_data_section=false
+	local entry_count=0
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" == "data:" ]]; then
+			in_data_section=true
+			continue
+		fi
+
+		# If we hit another top-level section, exit data section
+		if [[ "$in_data_section" == true && "$line" =~ ^[a-zA-Z] ]]; then
+			break
+		fi
+
+		# Process data entries
+		if [[ "$in_data_section" == true && "$line" =~ ^[[:space:]]+([a-zA-Z0-9_]+):[[:space:]]+\"?([^\"]*)\"?$ ]]; then
+			local key="${BASH_REMATCH[1]}"
+			local value="${BASH_REMATCH[2]}"
+
+			# Remove quotes if present
+			value="${value%\"}"
+			value="${value#\"}"
+
+			vars["$key"]="$value"
+			((entry_count++))
+			debug "Parsed: $key=***"
+		fi
+	done <"$configmap_file"
+
+	debug "Parsed $entry_count entries from configmap"
+
+	if [[ $entry_count -eq 0 ]]; then
+		die "No valid data entries found in $configmap_file"
+	fi
+
+	# Output the key=value pairs
+	for key in "${!vars[@]}"; do
+		printf "%s=%s\n" "$key" "${vars[$key]}"
+	done
+}
+
+generate_k8s_secret() {
+	local input_file="$1"
+	local namespace="$2"
+	local resource_name="${3:-${namespace}-secret}"
+	local secret_type="${4:-Opaque}"
+
+	local yaml_output
+	yaml_output="apiVersion: v1
+kind: Secret
+metadata:
+  name: $resource_name"
+
+	if [[ -n "$namespace" ]]; then
+		yaml_output+="
+  namespace: $namespace"
+	fi
+
+	yaml_output+="
+type: $secret_type
+data:"
+
+	local entry_count=0
+	local file_type
+	file_type=$(detect_file_type "$input_file")
+
+	case "$file_type" in
+	env)
+		while IFS='=' read -r key value; do
+			if [[ -n "$key" && -n "$value" ]]; then
+				local encoded_value
+				encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				yaml_output+="
+  $key: $encoded_value"
+				((entry_count++))
+				debug "Added secret entry: $key"
+			fi
+		done < <(parse_env_file "$input_file")
+		;;
+	configmap)
+		while IFS='=' read -r key value; do
+			if [[ -n "$key" && -n "$value" ]]; then
+				local encoded_value
+				encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				yaml_output+="
+  $key: $encoded_value"
+				((entry_count++))
+				debug "Added secret entry: $key"
+			fi
+		done < <(parse_configmap_yaml "$input_file")
+		;;
+	*)
+		die "Cannot convert $file_type to secret. Use env file or configmap YAML."
+		;;
+	esac
+
+	if [[ $entry_count -eq 0 ]]; then
+		die "No valid entries to generate secret"
+	fi
+
+	debug "Generated secret with $entry_count entries"
+	echo "$yaml_output"
+}
+
+generate_k8s_configmap() {
+	local input_file="$1"
+	local namespace="$2"
+	local resource_name="${3:-${namespace}-configmap}"
+
+	local yaml_output
+	yaml_output="apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: $resource_name"
+
+	if [[ -n "$namespace" ]]; then
+		yaml_output+="
+  namespace: $namespace"
+	fi
+
+	yaml_output+="
+data:"
+
+	local entry_count=0
+	local file_type
+	file_type=$(detect_file_type "$input_file")
+
+	case "$file_type" in
+	env)
+		while IFS='=' read -r key value; do
+			if [[ -n "$key" && -n "$value" ]]; then
+				yaml_output+="
+  $key: \"$value\""
+				((entry_count++))
+				debug "Added configmap entry: $key"
+			fi
+		done < <(parse_env_file "$input_file")
+		;;
+	secret)
+		while IFS='=' read -r key value; do
+			if [[ -n "$key" && -n "$value" ]]; then
+				yaml_output+="
+  $key: \"$value\""
+				((entry_count++))
+				debug "Added configmap entry: $key"
+			fi
+		done < <(parse_secret_yaml "$input_file")
+		;;
+	*)
+		die "Cannot convert $file_type to configmap. Use env file or secret YAML."
+		;;
+	esac
+
+	if [[ $entry_count -eq 0 ]]; then
+		die "No valid entries to generate configmap"
+	fi
+
+	debug "Generated configmap with $entry_count entries"
+	echo "$yaml_output"
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Kubernetes secret and configmap management tool
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}create${NC}      Create a Kubernetes resource from input file
+  ${GREEN}convert${NC}     Convert between resource types (secret ↔ configmap)
+  ${GREEN}validate${NC}    Validate input file format
+  ${GREEN}help${NC}        Show this help
+  ${GREEN}version${NC}     Show version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--file${NC} <path>                Path to the input file (.env, secret.yaml, or configmap.yaml)
+  ${YELLOW}--output${NC} <path>              Path to the output file (YAML format)
+  ${YELLOW}--type${NC} <secret|configmap>    Resource type to generate (default: $DEFAULT_RESOURCE_TYPE)
+  ${YELLOW}--namespace${NC} <name>           Kubernetes namespace for the resource (required)
+  ${YELLOW}--name${NC} <name>                Name for the resource (default: <namespace>-<type>)
+  ${YELLOW}--secret-type${NC} <type>         Secret type when creating secrets (default: $DEFAULT_SECRET_TYPE)
+  ${YELLOW}--copy${NC}                       Copy the resource to clipboard
+  ${YELLOW}-q, --quiet${NC}                  Minimize output
+  ${YELLOW}-d, --debug${NC}                  Enable debug output
+  ${YELLOW}-h, --help${NC}                   Show help
+  ${YELLOW}-v, --version${NC}                Show version
+
+${BOLD}SECRET TYPES:${NC}
+  Opaque                   - Arbitrary user-defined data (default)
+  kubernetes.io/tls        - TLS certificate data
+  kubernetes.io/dockercfg  - Docker config file
+  kubernetes.io/basic-auth - Basic authentication credentials
+
+${BOLD}EXAMPLES:${NC}
+  # Create secret from .env file
+  $SCRIPT_NAME create --file .env --type secret --namespace my-app --output secret.yaml
+
+  # Create configmap from .env file
+  $SCRIPT_NAME create --file .env --type configmap --namespace my-app --copy
+
+  # Convert secret to configmap
+  $SCRIPT_NAME convert --file secret.yaml --type configmap --namespace prod
+
+  # Convert configmap to secret
+  $SCRIPT_NAME convert --file configmap.yaml --type secret --namespace test
+
+  # Validate input file
+  $SCRIPT_NAME validate --file .env
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+cmd_validate() {
+	validate_input_file "$INPUT_FILE"
+	local file_type
+	file_type=$(detect_file_type "$INPUT_FILE")
+
+	log "Validating input file: $INPUT_FILE"
+	log "Detected file type: $file_type"
+
+	case "$file_type" in
+	env)
+		local entries
+		entries=$(parse_env_file "$INPUT_FILE" | wc -l)
+		success "Environment file is valid with $entries entries"
+		;;
+	secret)
+		local entries
+		entries=$(parse_secret_yaml "$INPUT_FILE" | wc -l)
+		success "Secret YAML is valid with $entries entries"
+		;;
+	configmap)
+		local entries
+		entries=$(parse_configmap_yaml "$INPUT_FILE" | wc -l)
+		success "ConfigMap YAML is valid with $entries entries"
+		;;
+	*)
+		die "Unknown or invalid file format: $file_type"
+		;;
+	esac
+}
+
+cmd_create() {
+	validate_input_file "$INPUT_FILE"
+	validate_namespace "$NAMESPACE"
+
+	local final_resource_name="${RESOURCE_NAME:-${NAMESPACE}-${RESOURCE_TYPE}}"
+	local yaml_output
+
+	case "$RESOURCE_TYPE" in
+	secret)
+		yaml_output=$(generate_k8s_secret "$INPUT_FILE" "$NAMESPACE" "$final_resource_name" "$SECRET_TYPE")
+		;;
+	configmap)
+		yaml_output=$(generate_k8s_configmap "$INPUT_FILE" "$NAMESPACE" "$final_resource_name")
+		;;
+	*)
+		die "Unknown resource type: $RESOURCE_TYPE. Use 'secret' or 'configmap'"
+		;;
+	esac
+
+	# Save to file if specified
+	if [[ -n "$OUTPUT_FILE" ]]; then
+		echo "$yaml_output" >"$OUTPUT_FILE"
+		success "Resource file generated: $OUTPUT_FILE"
+	fi
+
+	# Copy to clipboard if requested
+	if [[ "$COPY_TO_CLIPBOARD" == true ]]; then
+		copy_to_clipboard "$yaml_output"
+	fi
+
+	# Output to stdout if no file specified and not copying
+	if [[ -z "$OUTPUT_FILE" && "$COPY_TO_CLIPBOARD" != true ]]; then
+		echo "$yaml_output"
+	fi
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--file)
+			INPUT_FILE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--output)
+			OUTPUT_FILE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--type)
+			RESOURCE_TYPE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--namespace)
+			NAMESPACE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--name)
+			RESOURCE_NAME="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--secret-type)
+			SECRET_TYPE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--copy)
+			COPY_TO_CLIPBOARD=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	# Validate resource type
+	if [[ "$RESOURCE_TYPE" != "secret" && "$RESOURCE_TYPE" != "configmap" ]]; then
+		die "Invalid resource type: $RESOURCE_TYPE. Use 'secret' or 'configmap'"
+	fi
+
+	# Execute command
+	case "$command" in
+	create | convert)
+		[[ -z "$INPUT_FILE" ]] && die "Input file is required for $command command. Use --file <path>"
+		[[ -z "$NAMESPACE" ]] && die "Namespace is required for $command command. Use --namespace <name>"
+		print_summary
+		cmd_create
+		;;
+	validate)
+		[[ -z "$INPUT_FILE" ]] && die "Input file is required for $command command. Use --file <path>"
+		cmd_validate
+		;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
+}
+
+main "$@"

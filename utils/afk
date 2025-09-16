@@ -2,161 +2,291 @@
 set -euo pipefail
 
 # ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="2.0.0"
+readonly PID_FILE="/tmp/${SCRIPT_NAME}.pid"
+
+# ===================================
 # COLORS
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
 
 # ===================================
-# GLOBAL CONFIGURATION
+# CONFIGURATION
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
+INTERVAL=60
+PIXELS=1
+METHOD="mouse"
+DURATION=""
+QUIET=false
 DEBUG=false
-SILENT=false
 
 # ===================================
-# DEFAULT CONFIGURATION
+# LOGGING FUNCTIONS
 # ===================================
-DEFAULT_INTERVAL=60
-INTERVAL=$DEFAULT_INTERVAL
-INSTALL=true
-
-# ===================================
-# LOGGING
-# ===================================
-log() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${BLUE}==> $1${NC}"
-	fi
-}
-warn() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${YELLOW}⚠️  $1${NC}" >&2
-	fi
-}
-success() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${GREEN}✓ $1${NC}"
-	fi
-}
-abort() {
-	if [ "$SILENT" != "true" ]; then
-		echo -e "${RED}✗ $1${NC}" >&2
-	fi
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
 	exit 1
 }
-debug() {
-	if [ "$DEBUG" = "true" ]; then
-		echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
+
+# ===================================
+# UTILITY FUNCTIONS
+# ===================================
+require_command() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		die "'$1' not found. Install with: sudo apt install ${2:-$1}"
 	fi
 }
 
-# ===================================
-# UTILITIES
-# ===================================
-require_cmd() {
-	command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+is_running() {
+	[[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
-check_xdotool() {
-	if ! command -v xdotool &>/dev/null; then
-		if [[ "$INSTALL" == false ]]; then
-			abort "xdotool not found and --no-install was used."
-		fi
-		log "🔧 Installing xdotool..."
-		sudo apt-get update -qq && sudo apt-get install -y xdotool
-		success "xdotool installed successfully."
+# ===================================
+# KEEP-AWAKE METHODS
+# ===================================
+mouse_jiggle() {
+	local mouse_info
+	mouse_info=$(xdotool getmouselocation --shell)
+	eval "$mouse_info"
+	xdotool mousemove $((X + PIXELS)) "$Y" >/dev/null 2>&1 || die "Failed to move mouse"
+	sleep 0.1
+	xdotool mousemove "$X" "$Y" >/dev/null 2>&1 || die "Failed to reset mouse position"
+	debug "Mouse moved at position ($X, $Y)"
+}
+
+key_tap() {
+	xdotool key shift+F24 2>/dev/null
+	debug "Harmless keypress sent"
+}
+
+run_caffeine() {
+	debug "Starting caffeine in daemon mode"
+	caffeine &
+}
+
+perform_keep_awake() {
+	case "$METHOD" in
+	mouse) mouse_jiggle ;;
+	key) key_tap ;;
+	caffeine) run_caffeine ;;
+	*) die "Unknown method: $METHOD" ;;
+	esac
+}
+
+# ===================================
+# VALIDATION FUNCTIONS
+# ===================================
+validate_positive_integer() {
+	local value="$1"
+	local name="$2"
+	if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+		die "Invalid $name: '$value' (must be positive integer)"
 	fi
 }
 
-# ===================================
-# COMMANDS
-# ===================================
-cmd_help() {
-	cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
-
-Commands:
-  run                       Keep the system awake by moving the mouse
-  help                      Show this help message
-  version                   Show script version
-
-Options:
-  --interval SECONDS       Interval in seconds between mouse movements (default: $DEFAULT_INTERVAL)
-  --no-install             Skip xdotool auto-install check
-
-Examples:
-  $SCRIPT_NAME run --interval 30
-  $SCRIPT_NAME version
-  $SCRIPT_NAME help
-EOF
+validate_dependencies() {
+	case "$METHOD" in
+	mouse | key) require_command xdotool ;;
+	caffeine) require_command caffeine ;;
+	esac
 }
 
+# ===================================
+# COMMAND IMPLEMENTATIONS
+# ===================================
 cmd_run() {
-	log "Keeping system awake. Interval: ${INTERVAL}s"
-	log "Press Ctrl+C to exit."
-
+	if is_running; then
+		die "Already running (PID: $(cat "$PID_FILE"))"
+	fi
+	validate_dependencies
+	local end_time=""
+	printf "\n${BOLD}Starting Keep-Awake Service${NC}\n"
+	printf "Method:   ${GREEN}%s${NC}\n" "$METHOD"
+	printf "Interval: ${GREEN}%s${NC} seconds\n" "$INTERVAL"
+	[[ "$METHOD" == "mouse" ]] && printf "Movement: ${GREEN}%s${NC} pixels\n" "$PIXELS"
+	[[ -n "$DURATION" ]] && printf "Duration: ${GREEN}%s${NC} seconds\n" "$DURATION"
+	printf "\nPress ${BOLD}Ctrl+C${NC} to stop\n\n"
+	if [[ -n "$DURATION" ]]; then
+		end_time=$(($(date +%s) + DURATION))
+		debug "Will stop at: $(date -d "@$end_time")"
+	fi
+	log "Starting keep-awake loop..."
+	echo $$ >"$PID_FILE"
 	while true; do
-		eval "$(xdotool getmouselocation --shell 2>/dev/null)"
-		xdotool mousemove $((X + 1)) "$Y"
-		sleep 1
-		xdotool mousemove "$X" "$Y"
+		if [[ -n "$end_time" ]] && (($(date +%s) >= end_time)); then
+			success "Duration limit reached - stopping"
+			break
+		fi
+		perform_keep_awake &
 		sleep "$INTERVAL"
 	done
 }
 
-cmd_version() {
-	echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+cmd_stop() {
+	if ! is_running; then
+		warn "Service is not running"
+		exit 1
+	fi
+	local pid
+	pid=$(cat "$PID_FILE")
+	if kill "$pid" 2>/dev/null; then
+		success "Service stopped successfully (PID: $pid)"
+		rm -f "$PID_FILE"
+	else
+		die "Failed to stop service (PID: $pid)"
+	fi
+}
+
+cmd_status() {
+	if is_running; then
+		local pid uptime
+		pid=$(cat "$PID_FILE")
+		uptime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo "unknown")
+		printf "\n${BOLD}Service Status${NC}\n"
+		printf "Status:  ${GREEN}Running${NC}\n"
+		printf "PID:     ${GREEN}%s${NC}\n" "$pid"
+		printf "Uptime:  ${GREEN}%s${NC}\n" "$uptime"
+	else
+		printf "\n${BOLD}Service Status${NC}\n"
+		printf "Status:  ${YELLOW}Not running${NC}\n"
+		exit 1
+	fi
 }
 
 # ===================================
-# MAIN LOGIC
+# HELP & VERSION
 # ===================================
-main() {
-	local cmd="${1:-}"
-	shift || true
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Keep your Linux system awake
 
+${BOLD}USAGE:${NC}
+    $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+    ${GREEN}run${NC}       Start the keep-awake service
+    ${GREEN}stop${NC}      Stop the running service  
+    ${GREEN}status${NC}    Show current service status
+    ${GREEN}help${NC}      Show this help message
+    ${GREEN}version${NC}   Show version information
+
+${BOLD}OPTIONS:${NC}
+    ${YELLOW}-i, --interval${NC} SECONDS    Interval between actions (default: $INTERVAL)
+    ${YELLOW}-m, --method${NC} METHOD       Keep-awake method (default: $METHOD)
+    ${YELLOW}-p, --pixels${NC} PIXELS       Mouse movement distance (default: $PIXELS)
+    ${YELLOW}-t, --time${NC} SECONDS        Duration limit in seconds
+    ${YELLOW}-q, --quiet${NC}               Minimize output messages
+    ${YELLOW}-d, --debug${NC}               Enable debug output
+    ${YELLOW}-h, --help${NC}                Show this help message
+    ${YELLOW}-v, --version${NC}             Show version information
+
+${BOLD}METHODS:${NC}
+    ${GREEN}mouse${NC}     Move cursor slightly (requires: xdotool)
+    ${GREEN}key${NC}       Send harmless keypress (requires: xdotool)  
+    ${GREEN}caffeine${NC}  Use caffeine utility (requires: caffeine)
+
+${BOLD}INSTALLATION:${NC}
+    ${DIM}# For mouse/key methods:${NC}
+    sudo apt install xdotool
+    
+    ${DIM}# For caffeine method:${NC}  
+    sudo apt install caffeine
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--interval)
-			[[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]] && abort "Invalid or missing value for --interval"
-			INTERVAL="$2"
+		-i | --interval)
+			INTERVAL="${2:?Missing argument for $1}"
+			validate_positive_integer "$INTERVAL" "interval"
+			shift 2
+			;;
+		-m | --method)
+			METHOD="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		-p | --pixels)
+			PIXELS="${2:?Missing argument for $1}"
+			validate_positive_integer "$PIXELS" "pixels"
+			shift 2
+			;;
+		-t | --time)
+			DURATION="${2:?Missing argument for $1}"
+			validate_positive_integer "$DURATION" "duration"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
 			shift
 			;;
-		--no-install)
-			INSTALL=false
+		-d | --debug)
+			DEBUG=true
 			shift
 			;;
-		--*)
-			abort "Unknown option: $1"
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
 			;;
 		*)
-			[[ -z "$cmd" ]] && cmd="$1" || abort "Multiple commands not allowed"
+			shift
 			;;
 		esac
-		shift
 	done
+}
 
-	case "$cmd" in
-	run)
-		check_xdotool
-		cmd_run
-		;;
-	help | "")
-		cmd_help
-		;;
-	version)
-		cmd_version
-		;;
-	*)
-		abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
-		;;
+# ===================================
+# MAIN FUNCTION
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	# Execute command
+	case "$command" in
+	run) cmd_run ;;
+	stop) cmd_stop ;;
+	status) cmd_status ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
+	*) die "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage information." ;;
 	esac
 }
 
+# ===================================
+# ENTRY POINT
+# ===================================
 main "$@"

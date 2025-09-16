@@ -2,140 +2,173 @@
 set -euo pipefail
 
 # ===================================
-# COLORS
+# METADATA
 # ===================================
-RED='\e[0;31m'
-GREEN='\e[0;32m'
-YELLOW='\e[1;33m'
-BLUE='\e[0;34m'
-MAGENTA='\e[0;35m'
-NC='\e[0m' # No Color
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.0.0"
 
 # ===================================
-# GLOBAL CONFIGURATION
+# COLORS
 # ===================================
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
 DEBUG=false
-SILENT=false
+QUIET=false
 BASE_DIR="$(pwd)"
 
 # ===================================
-# LOGGING
+# LOGGING FUNCTIONS
 # ===================================
-log() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${BLUE}==> $1${NC}"
-    fi
-}
-warn() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${YELLOW}⚠️  $1${NC}" >&2
-    fi
-}
-success() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${GREEN}✓ $1${NC}"
-    fi
-}
-abort() {
-    if [ "$SILENT" != "true" ]; then
-        echo -e "${RED}✗ $1${NC}" >&2
-    fi
-    exit 1
-}
-debug() {
-    if [ "$DEBUG" = "true" ]; then
-        echo -e "${MAGENTA}🐞 DEBUG: $1${NC}"
-    fi
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
 }
 
 # ===================================
 # UTILITIES
 # ===================================
 require_sudo() {
-    if [[ $EUID -ne 0 ]]; then
-        abort "This script must be run as root (use sudo)."
-    fi
+	if [[ $EUID -ne 0 ]]; then
+		die "This script must be run as root (use sudo)."
+	fi
 }
 
 require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || abort "'$1' is not installed or not in PATH."
+	command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed or not in PATH."
 }
 
 require_flag_value() {
-    local value="$1"
-    local name="$2"
-    if [[ -z "$value" ]]; then
-        abort "Missing value for required flag: --$name"
-    fi
+	local value="$1"
+	local name="$2"
+	if [[ -z "$value" ]]; then
+		die "Missing value for required flag: --$name"
+	fi
 }
 
 # ===================================
 # COMMANDS
 # ===================================
 cmd_help() {
-    cat <<EOF
-Usage: $SCRIPT_NAME <command> [options]
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - A script to create symbolic links for executable scripts in the current directory and its subdirectories.
 
-Commands:
-  help           Show this help message
-  create-links   Create symbolic links for all executable scripts in the current directory and subdirectories
-  version        Show script version
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
 
-Examples:
-  $SCRIPT_NAME create-links
-  $SCRIPT_NAME version
+${BOLD}COMMANDS:${NC}
+  ${GREEN}link${NC}           Create symbolic links for all executable scripts in the current directory and subdirectories
+  ${GREEN}help${NC}           Show this help message
+  ${GREEN}version${NC}        Show script version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}-q, --quiet${NC}                  Minimize output
+  ${YELLOW}-d, --debug${NC}                  Enable debug output
+  ${YELLOW}-h, --help${NC}                   Show help
+  ${YELLOW}-v, --version${NC}                Show version
+
+${BOLD}EXAMPLES:${NC}
+  # Create symbolic links for all executable scripts
+  $SCRIPT_NAME link 
 EOF
 }
 
 cmd_create_links() {
-    log "Creating symbolic links for scripts in the '$BASE_DIR' directory and its subdirectories..."
+	log "Creating symbolic links for scripts in the '$BASE_DIR' directory and its subdirectories..."
 
-    # Function to create symbolic links for all scripts in the directory
-    create_symlinks() {
-        local dir=$1
-        for file in "$dir"/*; do
-            if [ -f "$file" ] && [ -x "$file" ]; then
-                sudo ln -sfv "$file" "/usr/local/bin/$(basename "$file")"
-            elif [ -d "$file" ]; then
-                create_symlinks "$file"
-            fi
-        done
-    }
+	# Function to create symbolic links for all scripts in the directory
+	create_symlinks() {
+		local dir=$1
+		for file in "$dir"/*; do
+			if [ -f "$file" ] && [ -x "$file" ]; then
+				sudo ln -sfv "$file" "/usr/local/bin/$(basename "$file")"
+			elif [ -d "$file" ]; then
+				create_symlinks "$file"
+			fi
+		done
+	}
 
-    # Start the process from the base directory
-    create_symlinks "$BASE_DIR"
+	# Start the process from the base directory
+	create_symlinks "$BASE_DIR"
 
-    success "Symbolic links creation completed."
+	success "Symbolic links creation completed."
 }
 
 cmd_version() {
-    echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
 }
 
 # ===================================
-# MAIN LOGIC
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
 # ===================================
 main() {
-    local cmd="${1:-}"
+	local command="${1:-help}"
+	parse_arguments "$@"
 
-    case "$cmd" in
-    help | "")
-        cmd_help
-        ;;
-    create-links)
-        shift
-        cmd_create_links "$@"
-        ;;
-    version)
-        shift
-        cmd_version "$@"
-        ;;
-    *)
-        abort "Unknown command: $cmd. Use '$SCRIPT_NAME help' to list available commands."
-        ;;
-    esac
+	case "$command" in
+	link)
+		cmd_create_links "$@"
+		;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version "$@"
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
 }
 
 main "$@"
