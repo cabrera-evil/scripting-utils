@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.0.1"
+readonly SCRIPT_DESCRIPTION="Sanitize .env files (strip comments, normalize KEY=value)"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+INPUT_FILE=""
+OUTPUT_FILE=""
+QUIET=false
+DEBUG=false
+PRINT_STDOUT=false
+COPY_CLIPBOARD=false
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+trim() {
+	local str="$1"
+	str="${str#"${str%%[![:space:]]*}"}"
+	str="${str%"${str##*[![:space:]]}"}"
+	printf "%s" "$str"
+}
+
+strip_inline_comment() {
+	local input="$1" output="" char quoted=""
+	local i len=${#input}
+
+	for ((i = 0; i < len; i++)); do
+		char="${input:i:1}"
+		if [[ -z "$quoted" ]]; then
+			case "$char" in
+			"'") quoted="'" ;;
+			'"') quoted='"' ;;
+			"#") break ;;
+			esac
+		else
+			[[ "$char" == "$quoted" ]] && quoted=""
+		fi
+		output+="$char"
+	done
+
+	printf "%s" "$output"
+}
+
+require_file() {
+	local file="$1"
+	[[ -f "$file" ]] || die "File not found: $file"
+	[[ -r "$file" ]] || die "File not readable: $file"
+}
+
+detect_clipboard_tool() {
+	if command -v xclip >/dev/null 2>&1; then
+		echo "xclip"
+	elif command -v pbcopy >/dev/null 2>&1; then
+		echo "pbcopy"
+	elif command -v wl-copy >/dev/null 2>&1; then
+		echo "wl-copy"
+	else
+		die "No clipboard utility found. Install xclip (Linux), pbcopy (macOS), or wl-copy (Wayland)"
+	fi
+}
+
+copy_to_clipboard() {
+	local content="$1" tool
+	tool=$(detect_clipboard_tool)
+	debug "Copying sanitized env to clipboard via $tool"
+
+	case "$tool" in
+	xclip)
+		printf "%s" "$content" | xclip -selection clipboard
+		;;
+	pbcopy)
+		printf "%s" "$content" | pbcopy
+		;;
+	wl-copy)
+		printf "%s" "$content" | wl-copy
+		;;
+	esac
+
+	success "Sanitized env copied to clipboard"
+}
+
+input_label() {
+	if [[ -n "$INPUT_FILE" ]]; then
+		printf "%s" "$INPUT_FILE"
+	else
+		printf "stdin"
+	fi
+}
+
+sanitize_line() {
+	local raw_line="$1" lineno="$2"
+	local line trimmed key value
+
+	# drop CR from CRLF files
+	raw_line="${raw_line%$'\r'}"
+
+	trimmed="$(trim "$raw_line")"
+	[[ -z "$trimmed" ]] && return 1
+
+	# skip full-line comments
+	if [[ "${trimmed:0:1}" == "#" ]]; then
+		return 1
+	fi
+
+	# remove leading whitespace and optional "export"
+	line="${raw_line#"${raw_line%%[![:space:]]*}"}"
+	if [[ "$line" == export* ]]; then
+		line="${line#export}"
+		line="$(trim "$line")"
+	else
+		line="$trimmed"
+	fi
+
+	[[ "$line" == *"="* ]] || die "Invalid entry (no '=') at $(input_label):$lineno"
+
+	key="${line%%=*}"
+	value="${line#*=}"
+
+	key="$(trim "$key")"
+	[[ -n "$key" ]] || die "Empty key at $(input_label):$lineno"
+
+	value="$(strip_inline_comment "$value")"
+	value="$(trim "$value")"
+
+	printf "%s=%s\n" "$key" "$value"
+}
+
+write_output() {
+	local lines=("$@")
+	local count="${#lines[@]}"
+	local sanitized_blob=""
+
+	if ((count > 0)); then
+		sanitized_blob="$(printf "%s\n" "${lines[@]}")"
+	fi
+
+	if [[ -n "$OUTPUT_FILE" ]]; then
+		if ((count > 0)); then
+			printf "%s\n" "${lines[@]}" >"$OUTPUT_FILE"
+		else
+			: >"$OUTPUT_FILE"
+		fi
+		success "Sanitized env written to $OUTPUT_FILE"
+	fi
+
+	if [[ "$PRINT_STDOUT" == true ]] || [[ -z "$OUTPUT_FILE" ]]; then
+		((count > 0)) && printf "%s\n" "${lines[@]}"
+	fi
+
+	if [[ "$COPY_CLIPBOARD" == true ]]; then
+		[[ -n "$sanitized_blob" ]] || die "Nothing to copy (no valid KEY=value pairs)"
+		copy_to_clipboard "$sanitized_blob"
+	fi
+
+	if ((count == 0)); then
+		warn "No key=value entries found to sanitize"
+	fi
+}
+
+sanitize_env() {
+	local sanitized=() line lineno=0
+	local input_stream="/dev/stdin"
+
+	if [[ -n "$INPUT_FILE" ]]; then
+		require_file "$INPUT_FILE"
+		input_stream="$INPUT_FILE"
+		log "Sanitizing $INPUT_FILE"
+	fi
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		debug "Read line $((lineno + 1)): $line"
+		((++lineno)) # avoid set -e exit on first iteration
+		debug "Processing line $lineno: $line"
+		if cleaned_line=$(sanitize_line "$line" "$lineno"); then
+			sanitized+=("$cleaned_line")
+		fi
+	done <"$input_stream"
+
+	local count="${#sanitized[@]}"
+
+	write_output "${sanitized[@]}"
+
+	if ((count > 0)); then
+		success "Sanitized $count entr$( ((count == 1)) && echo "y" || echo "ies")"
+	fi
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - ${SCRIPT_DESCRIPTION}
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] sanitize
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}sanitize${NC}     Clean an env file or stdin and emit normalized output
+  ${GREEN}help${NC}         Show this help message
+  ${GREEN}version${NC}      Show script version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}-f, --file${NC} <path>       Input env file (default: stdin)
+  ${YELLOW}-o, --out${NC} <path>        Write sanitized output to file (default: stdout)
+  ${YELLOW}-p, --print${NC}             Always print sanitized output to stdout
+  ${YELLOW}-c, --copy${NC}              Copy sanitized output to clipboard (xclip/pbcopy/wl-copy)
+  ${YELLOW}-q, --quiet${NC}             Minimize output
+  ${YELLOW}-d, --debug${NC}             Enable debug logs
+  ${YELLOW}-h, --help${NC}              Show help
+  ${YELLOW}-v, --version${NC}           Show version
+
+${BOLD}BEHAVIOR:${NC}
+  - Removes leading/trailing whitespace and blank lines.
+  - Drops full-line comments (#...) and inline comments outside quotes.
+  - Normalizes entries to KEY=value, preserving quoted values.
+  - Fails on lines missing '=' or with empty keys to avoid surprises.
+
+${BOLD}EXAMPLES:${NC}
+  # Sanitize a file to stdout
+  $SCRIPT_NAME sanitize --file .env
+
+  # Sanitize stdin and write to clean.env
+  cat .env | $SCRIPT_NAME sanitize --out clean.env
+
+  # Sanitize to file, also print and copy to clipboard
+  $SCRIPT_NAME sanitize --file .env.production --out .env.sanitized --print --copy
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-f | --file)
+			INPUT_FILE="${2:-}"
+			[[ -n "$INPUT_FILE" ]] || die "Missing value for --file"
+			shift 2
+			;;
+		-o | --out)
+			OUTPUT_FILE="${2:-}"
+			[[ -n "$OUTPUT_FILE" ]] || die "Missing value for --out"
+			shift 2
+			;;
+		-p | --print)
+			PRINT_STDOUT=true
+			shift
+			;;
+		-c | --copy)
+			COPY_CLIPBOARD=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	# Execute command
+	case "$command" in
+	sanitize)
+		sanitize_env
+		;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
+}
+
+main "$@"
