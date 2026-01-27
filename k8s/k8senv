@@ -35,6 +35,7 @@ RESOURCE_NAME=""
 COPY_TO_CLIPBOARD=false
 RESOURCE_TYPE="secret"
 SECRET_TYPE="Opaque"
+ENCODE_VALUES=true
 
 # Default configuration
 readonly DEFAULT_SECRET_TYPE="Opaque"
@@ -74,6 +75,7 @@ print_summary() {
 		printf "Secret Type:    %s\n" "$SECRET_TYPE"
 	fi
 	printf "Copy to CB:     %s\n" "${COPY_TO_CLIPBOARD}"
+	printf "Base64 Encode:  %s\n" "$ENCODE_VALUES"
 }
 
 validate_input_file() {
@@ -220,11 +222,19 @@ parse_secret_yaml() {
 
 	# Extract data section and decode base64 values
 	local in_data_section=false
+	local current_section=""
 	local entry_count=0
 
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		if [[ "$line" == "data:" ]]; then
 			in_data_section=true
+			current_section="data"
+			continue
+		fi
+
+		if [[ "$line" == "stringData:" ]]; then
+			in_data_section=true
+			current_section="stringData"
 			continue
 		fi
 
@@ -234,17 +244,23 @@ parse_secret_yaml() {
 		fi
 
 		# Process data entries
-		if [[ "$in_data_section" == true && "$line" =~ ^[[:space:]]+([a-zA-Z0-9_]+):[[:space:]]+([a-zA-Z0-9+/=]+)$ ]]; then
+		if [[ "$in_data_section" == true && "$line" =~ ^[[:space:]]+([a-zA-Z0-9_]+):[[:space:]]+(.*)$ ]]; then
 			local key="${BASH_REMATCH[1]}"
-			local encoded_value="${BASH_REMATCH[2]}"
+			local raw_value="${BASH_REMATCH[2]}"
 
-			# Decode the base64 value
-			local decoded_value
-			decoded_value=$(echo "$encoded_value" | base64 --decode 2>/dev/null || echo "$encoded_value")
+			# Remove quotes if present
+			raw_value="${raw_value%\"}"
+			raw_value="${raw_value#\"}"
 
-			secrets["$key"]="$decoded_value"
+			local value="$raw_value"
+
+			if [[ "$current_section" == "data" ]]; then
+				value=$(echo "$raw_value" | base64 --decode 2>/dev/null || echo "$raw_value")
+			fi
+
+			secrets["$key"]="$value"
 			((entry_count++))
-			debug "Decoded: $key=***"
+			debug "Captured ($current_section): $key=***"
 		fi
 	done <"$secret_file"
 
@@ -326,7 +342,8 @@ metadata:
 	fi
 
 	yaml_output+="
-type: $secret_type
+type: $secret_type"
+	yaml_output+="
 data:"
 
 	local entry_count=0
@@ -337,8 +354,10 @@ data:"
 	env)
 		while IFS='=' read -r key value; do
 			if [[ -n "$key" && -n "$value" ]]; then
-				local encoded_value
-				encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				local encoded_value="$value"
+				if [[ "$ENCODE_VALUES" == true ]]; then
+					encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				fi
 				yaml_output+="
   $key: $encoded_value"
 				((entry_count++))
@@ -349,8 +368,10 @@ data:"
 	configmap)
 		while IFS='=' read -r key value; do
 			if [[ -n "$key" && -n "$value" ]]; then
-				local encoded_value
-				encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				local encoded_value="$value"
+				if [[ "$ENCODE_VALUES" == true ]]; then
+					encoded_value=$(echo -n "$value" | base64 | tr -d '\n')
+				fi
 				yaml_output+="
   $key: $encoded_value"
 				((entry_count++))
@@ -452,6 +473,7 @@ ${BOLD}OPTIONS:${NC}
   ${YELLOW}--namespace${NC} <name>           Kubernetes namespace for the resource (required)
   ${YELLOW}--name${NC} <name>                Name for the resource (default: <namespace>-<type>)
   ${YELLOW}--secret-type${NC} <type>         Secret type when creating secrets (default: $DEFAULT_SECRET_TYPE)
+  ${YELLOW}--no-encode${NC}                  Leave values plain in data (skip base64)
   ${YELLOW}--copy${NC}                       Copy the resource to clipboard
   ${YELLOW}-q, --quiet${NC}                  Minimize output
   ${YELLOW}-d, --debug${NC}                  Enable debug output
@@ -476,6 +498,9 @@ ${BOLD}EXAMPLES:${NC}
 
   # Convert configmap to secret
   $SCRIPT_NAME convert --file configmap.yaml --type secret --namespace test
+
+  # Create secret without base64 encoding (plain values under data)
+  $SCRIPT_NAME create --file .env --type secret --namespace my-app --no-encode
 
   # Validate input file
   $SCRIPT_NAME validate --file .env
@@ -581,6 +606,10 @@ parse_arguments() {
 		--secret-type)
 			SECRET_TYPE="${2:?Missing value for $1}"
 			shift 2
+			;;
+		--no-encode | -no-encode)
+			ENCODE_VALUES=false
+			shift
 			;;
 		--copy)
 			COPY_TO_CLIPBOARD=true
