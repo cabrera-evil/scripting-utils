@@ -29,6 +29,8 @@ fi
 DRY_RUN=false
 QUIET=false
 DEBUG=false
+LOCAL_UID="$(id -u)"
+LOCAL_GID="$(id -g)"
 
 # ===================================
 # LOGGING FUNCTIONS
@@ -117,7 +119,7 @@ copy_volume_to_dir() {
 		-v "${vol}:/from:ro" \
 		-v "${dst_parent}/${dst_base}:/to" \
 		alpine:3.20 \
-		sh -c 'cd /from && cp -a . /to'
+		sh -c 'cd /from && cp -a . /to && chown -R '"${LOCAL_UID}:${LOCAL_GID}"' /to'
 }
 
 copy_dir_to_volume() {
