@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION (DEFAULTS)
+# ===================================
+REMOTE=""
+REMOTE_BASE=""
+
+LOCAL_DIR="$(pwd)"
+LOCAL_NAME="$(basename "$LOCAL_DIR")"
+
+DRY_RUN=false
+QUIET=false
+DEBUG=false
+YES=false
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITY FUNCTIONS
+# ===================================
+require_command() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		die "'$1' not found. Install it and re-run."
+	fi
+}
+
+run_cmd() {
+	if [[ "$DRY_RUN" == true ]]; then
+		printf "${DIM}DRY-RUN:${NC} "
+		printf "%q " "$@"
+		printf "\n"
+		return 0
+	fi
+	"$@"
+}
+
+abs_path() {
+	local p="$1"
+	if command -v realpath >/dev/null 2>&1; then
+		realpath -m "$p"
+	else
+		python3 - "$p" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+	fi
+}
+
+confirm() {
+	local prompt="$1"
+	[[ "$YES" == true ]] && return 0
+	read -r -p "$prompt [y/N]: " ans
+	[[ "${ans:-}" == "y" || "${ans:-}" == "Y" ]]
+}
+
+# ===================================
+# RSYNC CONFIG
+# ===================================
+rsync_common_args() {
+	# Safe flags to avoid common rsync code 23 attr errors and avoid destructive changes.
+	# -r: recursive, -l: links, -v: verbose, -z: compress
+	# --no-* and --omit-dir-times: avoids permission/owner/time issues across filesystems
+	echo "-rlvz --progress --itemize-changes --no-perms --no-owner --no-group --omit-dir-times"
+}
+
+compute_remote_dir() {
+	[[ -n "$REMOTE" ]] || die "Missing --remote"
+	local base="${REMOTE_BASE%/}"
+	echo "${base}/${LOCAL_NAME}"
+}
+
+print_plan() {
+	local remote_dir
+	remote_dir="$(compute_remote_dir)"
+
+	printf "\n${BOLD}Sync Plan${NC}\n"
+	printf "Local : ${GREEN}%s${NC}\n" "$(abs_path "$LOCAL_DIR")"
+	printf "Remote: ${GREEN}%s${NC}:${GREEN}%s${NC}\n" "$REMOTE" "$remote_dir"
+	printf "Mode  : ${GREEN}NO DELETE${NC}\n"
+	printf "\n"
+}
+
+# ===================================
+# COMMAND IMPLEMENTATIONS
+# ===================================
+cmd_push() {
+	require_command rsync
+	print_plan
+
+	if ! confirm "Proceed with PUSH (local -> remote)?"; then
+		warn "Cancelled"
+		exit 1
+	fi
+
+	local remote_dir
+	remote_dir="$(compute_remote_dir)"
+	log "PUSH local -> remote (no delete)"
+	# trailing slashes are important to copy contents not the folder itself
+	run_cmd rsync $(rsync_common_args) ./ "${REMOTE}:${remote_dir}/"
+	success "Push complete"
+}
+
+cmd_pull() {
+	require_command rsync
+	print_plan
+
+	if ! confirm "Proceed with PULL (remote -> local)?"; then
+		warn "Cancelled"
+		exit 1
+	fi
+
+	local remote_dir
+	remote_dir="$(compute_remote_dir)"
+	log "PULL remote -> local (no delete)"
+	run_cmd rsync $(rsync_common_args) "${REMOTE}:${remote_dir}/" ./
+	success "Pull complete"
+}
+
+cmd_menu() {
+	require_command rsync
+
+	while true; do
+		print_plan
+		cat <<EOF
+Choose an action:
+  1) Dry-run PUSH (local -> remote)
+  2) Dry-run PULL (remote -> local)
+  3) PUSH (local -> remote)
+  4) PULL (remote -> local)
+  5) Quit
+EOF
+		echo
+		read -r -p "Enter choice [1-5]: " choice
+
+		case "${choice}" in
+		1)
+			DRY_RUN=true
+			cmd_push
+			DRY_RUN=false
+			;;
+		2)
+			DRY_RUN=true
+			cmd_pull
+			DRY_RUN=false
+			;;
+		3) cmd_push ;;
+		4) cmd_pull ;;
+		5)
+			log "Bye."
+			exit 0
+			;;
+		*) die "Invalid choice: ${choice}" ;;
+		esac
+	done
+}
+
+# ===================================
+# HELP & VERSION
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Sync current directory to/from a remote host using rsync (safe by default)
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}push${NC}       Sync local -> remote (no delete)
+  ${GREEN}pull${NC}       Sync remote -> local (no delete)
+  ${GREEN}menu${NC}       Interactive menu (default)
+  ${GREEN}help${NC}       Show help
+  ${GREEN}version${NC}    Show version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}-r, --remote${NC} TARGET      SSH alias or user@host (required)
+  ${YELLOW}-b, --base${NC} DIR           Remote base dir (default: $REMOTE_BASE)
+  ${YELLOW}-n, --dry-run${NC}            Print actions without executing
+  ${YELLOW}-y, --yes${NC}                Skip confirmations
+  ${YELLOW}-q, --quiet${NC}              Less output
+  ${YELLOW}-d, --debug${NC}              Debug output
+  ${YELLOW}-h, --help${NC}               Show help
+  ${YELLOW}-v, --version${NC}            Show version
+
+${BOLD}BEHAVIOR:${NC}
+  - Extracts current directory name and syncs to:
+      <remote_base_dir>/<current_dir_name>
+  - Uses ~/.ssh/config automatically
+  - NO DELETE flags are used by default (non-destructive)
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME -r rpi menu
+  $SCRIPT_NAME -r pi@192.168.16.10 -b ~/projects push
+  $SCRIPT_NAME -r rpi -n pull
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-r | --remote)
+			REMOTE="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		-b | --base)
+			REMOTE_BASE="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		-n | --dry-run)
+			DRY_RUN=true
+			shift
+			;;
+		-y | --yes)
+			YES=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			# command
+			break
+			;;
+		esac
+	done
+
+	ARGS=("$@")
+}
+
+# ===================================
+# MAIN FUNCTION
+# ===================================
+main() {
+	parse_arguments "$@"
+
+	local command="${ARGS[0]:-menu}"
+
+	[[ -n "$REMOTE" ]] || {
+		cmd_help
+		die "Missing required option: --remote"
+	}
+
+	case "$command" in
+	push) cmd_push ;;
+	pull) cmd_pull ;;
+	menu) cmd_menu ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
+	*) die "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage information." ;;
+	esac
+}
+
+# ===================================
+# ENTRY POINT
+# ===================================
+main "$@"

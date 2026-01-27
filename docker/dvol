@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly DIM=$'\033[2m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' DIM='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION (DEFAULTS)
+# ===================================
+DRY_RUN=false
+QUIET=false
+DEBUG=false
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() { [[ "$QUIET" != true ]] && printf "${BLUE}▶${NC} %s\n" "$*" || true; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() { [[ "$QUIET" != true ]] && printf "${GREEN}✓${NC} %s\n" "$*" || true; }
+debug() { [[ "$DEBUG" == true ]] && printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2 || true; }
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITY FUNCTIONS
+# ===================================
+require_command() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		die "'$1' not found. Install it and re-run."
+	fi
+}
+
+run_cmd() {
+	if [[ "$DRY_RUN" == true ]]; then
+		printf "${DIM}DRY-RUN:${NC} "
+		printf "%q " "$@"
+		printf "\n"
+		return 0
+	fi
+	"$@"
+}
+
+abs_path() {
+	local p="$1"
+	if command -v realpath >/dev/null 2>&1; then
+		realpath -m "$p"
+	else
+		python3 - "$p" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+	fi
+}
+
+is_dir_non_empty() {
+	local d="$1"
+	[[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null || true)" ]]
+}
+
+volume_exists() {
+	docker volume inspect "$1" >/dev/null 2>&1
+}
+
+container_running() {
+	docker ps --format '{{.Names}}' | grep -qx "$1"
+}
+
+# ===================================
+# CORE COPY
+# ===================================
+copy_volume_to_dir() {
+	local vol="$1"
+	local dst="$2"
+	local mode="${3:-safe}" # safe|force
+
+	if ! volume_exists "$vol"; then
+		warn "Volume not found, skipping: $vol"
+		return 0
+	fi
+
+	local dst_abs dst_parent dst_base
+	dst_abs="$(abs_path "$dst")"
+	dst_parent="$(dirname "$dst_abs")"
+	dst_base="$(basename "$dst_abs")"
+
+	run_cmd mkdir -p "$dst_parent"
+	run_cmd mkdir -p "$dst_abs"
+
+	if [[ "$mode" == "safe" ]] && is_dir_non_empty "$dst_abs"; then
+		die "Destination not empty: $dst_abs (use --force or empty it manually)"
+	fi
+
+	log "Copying ${BOLD}${vol}${NC} -> ${BOLD}${dst_abs}${NC}"
+	run_cmd docker run --rm \
+		-v "${vol}:/from:ro" \
+		-v "${dst_parent}/${dst_base}:/to" \
+		alpine:3.20 \
+		sh -c 'cd /from && cp -a . /to'
+}
+
+copy_dir_to_volume() {
+	local src="$1"
+	local vol="$2"
+	local mode="${3:-safe}" # safe|force
+
+	[[ -d "$src" ]] || die "Source dir not found: $src"
+
+	if ! volume_exists "$vol"; then
+		log "Creating volume: $vol"
+		run_cmd docker volume create "$vol" >/dev/null
+	fi
+
+	local src_abs
+	src_abs="$(abs_path "$src")"
+
+	if [[ "$mode" == "safe" ]]; then
+		# If volume has any content, refuse (best-effort check).
+		local has_content
+		has_content="$(docker run --rm -v "${vol}:/to" alpine:3.20 sh -c 'ls -A /to 2>/dev/null | head -n 1' || true)"
+		if [[ -n "$has_content" ]]; then
+			die "Volume not empty: $vol (use --force if you really want to merge/overwrite)"
+		fi
+	fi
+
+	log "Copying ${BOLD}${src_abs}${NC} -> ${BOLD}${vol}${NC}"
+	run_cmd docker run --rm \
+		-v "${src_abs}:/from:ro" \
+		-v "${vol}:/to" \
+		alpine:3.20 \
+		sh -c 'cd /from && cp -a . /to'
+}
+
+# ===================================
+# COMMAND IMPLEMENTATIONS
+# ===================================
+cmd_backup() {
+	require_command docker
+	[[ -n "${VOL:-}" ]] || die "Missing --vol"
+	[[ -n "${DST:-}" ]] || die "Missing --dst"
+
+	if [[ -n "${CONTAINER:-}" ]] && [[ "${STOP_CONTAINER:-false}" == true ]]; then
+		log "Stopping container (if running): $CONTAINER"
+		if container_running "$CONTAINER"; then
+			run_cmd docker stop "$CONTAINER"
+		else
+			debug "Container not running: $CONTAINER"
+		fi
+	fi
+
+	copy_volume_to_dir "$VOL" "$DST" "$([[ "${FORCE:-false}" == true ]] && echo force || echo safe)"
+	success "Backup complete."
+}
+
+cmd_restore() {
+	require_command docker
+	[[ -n "${SRC:-}" ]] || die "Missing --src"
+	[[ -n "${VOL:-}" ]] || die "Missing --vol"
+
+	if [[ -n "${CONTAINER:-}" ]] && [[ "${STOP_CONTAINER:-false}" == true ]]; then
+		log "Stopping container (if running): $CONTAINER"
+		if container_running "$CONTAINER"; then
+			run_cmd docker stop "$CONTAINER"
+		else
+			debug "Container not running: $CONTAINER"
+		fi
+	fi
+
+	copy_dir_to_volume "$SRC" "$VOL" "$([[ "${FORCE:-false}" == true ]] && echo force || echo safe)"
+	success "Restore complete."
+}
+
+cmd_list() {
+	require_command docker
+	log "Docker volumes:"
+	docker volume ls
+}
+
+cmd_inspect() {
+	require_command docker
+	[[ -n "${VOL:-}" ]] || die "Missing --vol"
+	docker volume inspect "$VOL"
+}
+
+cmd_check() {
+	require_command docker
+
+	printf "\n${BOLD}Resolved Configuration${NC}\n"
+	printf "Volume:      %s\n" "${VOL:-<unset>}"
+	printf "DST:         %s\n" "${DST:-<unset>}"
+	printf "SRC:         %s\n" "${SRC:-<unset>}"
+	printf "Container:   %s\n" "${CONTAINER:-<unset>}"
+	printf "Stop:        %s\n" "${STOP_CONTAINER:-false}"
+	printf "Force:       %s\n" "${FORCE:-false}"
+	printf "Dry-run:     %s\n" "$DRY_RUN"
+	printf "\n"
+
+	if [[ -n "${VOL:-}" ]]; then
+		if volume_exists "$VOL"; then
+			success "Found volume: $VOL"
+		else
+			warn "Missing volume: $VOL"
+		fi
+	fi
+
+	if [[ -n "${DST:-}" ]]; then
+		printf "DST(abs):    %s\n" "$(abs_path "$DST")"
+	fi
+	if [[ -n "${SRC:-}" ]]; then
+		printf "SRC(abs):    %s\n" "$(abs_path "$SRC")"
+	fi
+
+	if [[ -n "${CONTAINER:-}" ]]; then
+		if container_running "$CONTAINER"; then
+			success "Container running: $CONTAINER"
+		else
+			warn "Container not running: $CONTAINER"
+		fi
+	fi
+}
+
+# ===================================
+# HELP & VERSION
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Backup/restore ANY Docker named volume to/from local folders
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}backup${NC}     Copy a named volume -> local directory
+  ${GREEN}restore${NC}    Copy a local directory -> named volume (creates volume if missing)
+  ${GREEN}list${NC}       List docker volumes
+  ${GREEN}inspect${NC}    Inspect a volume
+  ${GREEN}check${NC}      Print resolved config & quick checks
+  ${GREEN}help${NC}       Show this help
+  ${GREEN}version${NC}    Show version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--vol${NC} NAME             Volume name (required for backup/restore/inspect)
+  ${YELLOW}--dst${NC} PATH             Destination dir for backup (required for backup)
+  ${YELLOW}--src${NC} PATH             Source dir for restore (required for restore)
+  ${YELLOW}--container${NC} NAME       Container to stop (optional)
+  ${YELLOW}--stop${NC}                 Stop container before copy (recommended)
+  ${YELLOW}--force${NC}                Allow non-empty destination dir / non-empty volume (dangerous)
+  ${YELLOW}--dry-run${NC}              Print actions without executing
+  ${YELLOW}-q, --quiet${NC}            Less output
+  ${YELLOW}-d, --debug${NC}            Debug output
+  ${YELLOW}-h, --help${NC}             Show help
+  ${YELLOW}-v, --version${NC}          Show version
+
+${BOLD}EXAMPLES:${NC}
+  ${DIM}# Backup a volume to local folder (safe):${NC}
+  $SCRIPT_NAME --vol my_data --dst ./backups/my_data --stop --container my-app backup
+
+  ${DIM}# Restore from folder into volume:${NC}
+  $SCRIPT_NAME --src ./backups/my_data --vol my_data --stop --container my-app restore
+
+  ${DIM}# Force overwrite/merge (be careful):${NC}
+  $SCRIPT_NAME --vol my_data --dst ./backups/my_data --force backup
+
+  ${DIM}# List volumes:${NC}
+  $SCRIPT_NAME list
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	STOP_CONTAINER=false
+	FORCE=false
+
+	# Parse options until the first non-option (the command)
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--vol)
+			VOL="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		--dst)
+			DST="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		--src)
+			SRC="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		--container)
+			CONTAINER="${2:?Missing argument for $1}"
+			shift 2
+			;;
+		--stop)
+			STOP_CONTAINER=true
+			shift
+			;;
+		--force)
+			FORCE=true
+			shift
+			;;
+		--dry-run)
+			DRY_RUN=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			break
+			;;
+		esac
+	done
+
+	ARGS=("$@")
+}
+
+# ===================================
+# MAIN FUNCTION
+# ===================================
+main() {
+	parse_arguments "$@"
+	local command="${ARGS[0]:-help}"
+
+	case "$command" in
+	backup) cmd_backup ;;
+	restore) cmd_restore ;;
+	list) cmd_list ;;
+	inspect) cmd_inspect ;;
+	check) cmd_check ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
+	*) die "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage information." ;;
+	esac
+}
+
+# ===================================
+# ENTRY POINT
+# ===================================
+main "$@"
