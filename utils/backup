@@ -40,6 +40,9 @@ COMPRESSION_LEVEL="-0"
 OUTPUT_NAME=""
 DUNST_ID=91190
 DIRS_TO_BACKUP=(
+	"$HOME/.ssh"
+	"$HOME/.gitconfig"
+	"$HOME/.gitignore_global"
 	"$HOME/artifacts"
 	"$HOME/Backups"
 	"$HOME/dockerhub"
@@ -56,6 +59,7 @@ EXCLUDE_PATTERN=(
 	"*/build/*"
 	"*/.next/*"
 	"*/.pnpm/*"
+	"*/.venv/*"
 	"*.zip"
 	"*.tar.gz"
 	"*.log"
