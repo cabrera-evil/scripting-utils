@@ -275,22 +275,18 @@ parse_arguments() {
 			die "Unknown option: $1"
 			;;
 		*)
-			# command
-			break
+			shift
 			;;
 		esac
 	done
-
-	ARGS=("$@")
 }
 
 # ===================================
 # MAIN FUNCTION
 # ===================================
 main() {
+	local command="${1:-menu}"
 	parse_arguments "$@"
-
-	local command="${ARGS[0]:-menu}"
 
 	[[ -n "$REMOTE" ]] || {
 		cmd_help

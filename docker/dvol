@@ -298,7 +298,6 @@ parse_arguments() {
 	STOP_CONTAINER=false
 	FORCE=false
 
-	# Parse options until the first non-option (the command)
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--vol)
@@ -349,20 +348,18 @@ parse_arguments() {
 			die "Unknown option: $1"
 			;;
 		*)
-			break
+			shift
 			;;
 		esac
 	done
-
-	ARGS=("$@")
 }
 
 # ===================================
 # MAIN FUNCTION
 # ===================================
 main() {
+	local command="${1:-help}"
 	parse_arguments "$@"
-	local command="${ARGS[0]:-help}"
 
 	case "$command" in
 	backup) cmd_backup ;;
