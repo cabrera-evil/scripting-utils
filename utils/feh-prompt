@@ -15,7 +15,7 @@ NC='\e[0m'
 # GLOBAL CONFIGURATION
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 DEBUG=false
 SILENT=false
 
@@ -84,6 +84,18 @@ choose_wallpaper() {
 			--preview-window=right:60% || true
 }
 
+random_wallpaper() {
+	mapfile -t wallpapers < <(
+		find "$WALLPAPER_DIR" -type f \
+			\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.tif' -o -iname '*.tiff' \) |
+			LC_ALL=C sort -fV
+	)
+
+	[[ "${#wallpapers[@]}" -gt 0 ]] || abort "No wallpapers found in: $WALLPAPER_DIR"
+
+	printf '%s\n' "${wallpapers[RANDOM % ${#wallpapers[@]}]}"
+}
+
 # ===================================
 # COMMANDS
 # ===================================
@@ -94,6 +106,7 @@ Usage: $SCRIPT_NAME <command>
 Commands:
   set <image>        Set specific wallpaper and save it
   choose             Launch fzf selector to pick a wallpaper (with preview)
+  random             Pick a random wallpaper and save it
   restore            Restore previously used wallpaper
   version            Show script version
   help               Show this help message
@@ -134,6 +147,16 @@ cmd_choose() {
 	[[ -n "$img" ]] && apply_wallpaper "$img"
 }
 
+cmd_random() {
+	require_cmd feh
+
+	[[ ! -d "$WALLPAPER_DIR" ]] && abort "Wallpaper directory not found: $WALLPAPER_DIR"
+
+	local img
+	img="$(random_wallpaper)"
+	[[ -n "$img" ]] && apply_wallpaper "$img"
+}
+
 cmd_restore() {
 	[[ -f "$WALLPAPER_FILE" ]] || abort "No saved wallpaper found."
 	local saved_wallpaper
@@ -156,6 +179,7 @@ main() {
 	case "$cmd" in
 	set) cmd_set "$@" ;;
 	choose) cmd_choose ;;
+	random) cmd_random ;;
 	restore) cmd_restore ;;
 	version) cmd_version ;;
 	help | "") cmd_help ;;
