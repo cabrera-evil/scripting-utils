@@ -15,7 +15,7 @@ NC='\e[0m'
 # GLOBAL CONFIGURATION
 # ===================================
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 DEBUG=false
 SILENT=false
 
@@ -75,11 +75,13 @@ choose_wallpaper() {
 	require_cmd fzf
 	require_cmd feh
 	require_cmd chafa
-	find "$WALLPAPER_DIR" -type f \( -iname '*.jpg' -o -iname '*.png' \) |
+
+	# Use version sort so names like Wall1, Wall2, Wall10 appear naturally.
+	find "$WALLPAPER_DIR" -type f \
+		\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.tif' -o -iname '*.tiff' \) |
+		LC_ALL=C sort -fV |
 		fzf --preview="chafa --symbols=block --fill=block --size=60x25 --format=ansi {}" \
-			--preview-window=right:60% |
-		tee /dev/tty |
-		xargs -r feh --bg-scale
+			--preview-window=right:60% || true
 }
 
 # ===================================
