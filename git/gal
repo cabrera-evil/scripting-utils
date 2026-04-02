@@ -1,0 +1,647 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+readonly VERSION="1.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+INCLUDE_MAJOR=false
+OPEN_BROWSER=false
+SCAN_PATH="."
+CHECK_REPO=""
+CHECK_CURRENT=""
+BROWSE_REPO=""
+
+# ===================================
+# RUNTIME STATE
+# ===================================
+declare -A TAGS_CACHE=()
+declare -A OPENED_REPOS=()
+SCAN_ROWS=()
+OUTDATED_COUNT=0
+UNKNOWN_COUNT=0
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() {
+	if [[ "$QUIET" != true ]]; then
+		printf "${BLUE}▶${NC} %s\n" "$*"
+	fi
+}
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() {
+	if [[ "$QUIET" != true ]]; then
+		printf "${GREEN}✓${NC} %s\n" "$*"
+	fi
+}
+debug() {
+	if [[ "$DEBUG" == true ]]; then
+		printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2
+	fi
+}
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+require_command() {
+	local cmd="$1" hint="${2:-$1}"
+	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
+}
+
+trim_quotes() {
+	local value="$1"
+	value="${value%\"}"
+	value="${value#\"}"
+	value="${value%\'}"
+	value="${value#\'}"
+	printf "%s" "$value"
+}
+
+is_semver_like_tag() {
+	local tag="$1"
+	[[ "$tag" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]
+}
+
+major_of_tag() {
+	local tag="${1#v}"
+	printf "%s" "${tag%%.*}"
+}
+
+version_gt() {
+	local a="${1#v}" b="${2#v}"
+	[[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" == "$a" && "$a" != "$b" ]]
+}
+
+latest_of_tags() {
+	local best="" tag
+	for tag in "$@"; do
+		if [[ -z "$best" ]] || version_gt "$tag" "$best"; then
+			best="$tag"
+		fi
+	done
+	printf "%s" "$best"
+}
+
+detect_repo_from_git() {
+	local url
+	url="$(git config --get remote.origin.url || true)"
+	[[ -z "$url" ]] && die "Cannot detect repository. Use --repo <owner/repo>."
+	url="${url%.git}"
+	if [[ "$url" =~ github\.com[:/]{1}([^/]+/[^/]+)$ ]]; then
+		printf "%s" "${BASH_REMATCH[1]}"
+	else
+		die "Unsupported remote URL '$url'. Pass --repo <owner/repo>."
+	fi
+}
+
+resolve_repo_for_browse() {
+	if [[ -n "$BROWSE_REPO" ]]; then
+		printf "%s" "$BROWSE_REPO"
+		return
+	fi
+	if command -v gh >/dev/null 2>&1 &&
+		gh repo view --json nameWithOwner -q .nameWithOwner >/dev/null 2>&1; then
+		gh repo view --json nameWithOwner -q .nameWithOwner
+		return
+	fi
+	detect_repo_from_git
+}
+
+fetch_tags_for_repo() {
+	local repo="$1"
+	if [[ -v "TAGS_CACHE[$repo]" ]]; then
+		printf "%s" "${TAGS_CACHE[$repo]}"
+		return
+	fi
+
+	local tags
+	tags="$(gh api "repos/$repo/tags?per_page=100" --jq '.[].name' 2>/dev/null || true)"
+	TAGS_CACHE["$repo"]="$tags"
+	printf "%s" "$tags"
+}
+
+fetch_release_tag_for_repo() {
+	local repo="$1"
+	gh release view --repo "$repo" --json tagName -q .tagName 2>/dev/null || true
+}
+
+latest_recommended_for_ref() {
+	local repo="$1" current_ref="$2" include_major="$3"
+	local tags
+	tags="$(fetch_tags_for_repo "$repo")"
+	[[ -z "$tags" ]] && {
+		printf ""
+		return
+	}
+
+	local stable_tags=() tag
+	while IFS= read -r tag; do
+		[[ -z "$tag" ]] && continue
+		is_semver_like_tag "$tag" || continue
+		stable_tags+=("$tag")
+	done <<<"$tags"
+
+	((${#stable_tags[@]} > 0)) || {
+		printf ""
+		return
+	}
+
+	if [[ "$include_major" == true ]]; then
+		latest_of_tags "${stable_tags[@]}"
+		return
+	fi
+
+	if ! is_semver_like_tag "$current_ref"; then
+		printf ""
+		return
+	fi
+
+	local major
+	major="$(major_of_tag "$current_ref")"
+	local same_major=()
+	for tag in "${stable_tags[@]}"; do
+		[[ "$(major_of_tag "$tag")" == "$major" ]] && same_major+=("$tag")
+	done
+
+	((${#same_major[@]} > 0)) || {
+		printf ""
+		return
+	}
+
+	latest_of_tags "${same_major[@]}"
+}
+
+latest_stable_tag_for_repo() {
+	local repo="$1"
+	local tags
+	tags="$(fetch_tags_for_repo "$repo")"
+
+	local stable_tags=() tag
+	while IFS= read -r tag; do
+		[[ -z "$tag" ]] && continue
+		is_semver_like_tag "$tag" || continue
+		stable_tags+=("$tag")
+	done <<<"$tags"
+
+	if ((${#stable_tags[@]} == 0)); then
+		local release_tag
+		release_tag="$(fetch_release_tag_for_repo "$repo")"
+		if is_semver_like_tag "$release_tag"; then
+			printf "%s" "$release_tag"
+			return
+		fi
+		printf ""
+		return
+	fi
+
+	latest_of_tags "${stable_tags[@]}"
+}
+
+parse_uses_target_from_line() {
+	local line="$1"
+	if [[ "$line" =~ uses:[[:space:]]*([^[:space:]#]+) ]]; then
+		trim_quotes "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	return 1
+}
+
+parse_action_repo_and_ref() {
+	local target="$1"
+
+	if [[ "$target" == ./* ]] || [[ "$target" == docker://* ]]; then
+		return 1
+	fi
+
+	[[ "$target" == *@* ]] || return 1
+
+	local left="${target%@*}"
+	local ref="${target##*@}"
+	local owner="${left%%/*}"
+	local rest="${left#*/}"
+	local repo_name="${rest%%/*}"
+	local repo="${owner}/${repo_name}"
+
+	[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+
+	printf "%s\t%s" "$repo" "$ref"
+}
+
+pad_right() {
+	local s="$1" width="$2"
+	printf "%-*s" "$width" "$s"
+}
+
+print_table() {
+	local rows=("$@")
+	local headers=("ACTION" "CURRENT" "RECOMMENDED" "STATUS" "LOCATION")
+	local w1=${#headers[0]} w2=${#headers[1]} w3=${#headers[2]} w4=${#headers[3]} w5=${#headers[4]}
+	local row c1 c2 c3 c4 c5
+
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r c1 c2 c3 c4 c5 <<<"$row"
+		((${#c1} > w1)) && w1=${#c1}
+		((${#c2} > w2)) && w2=${#c2}
+		((${#c3} > w3)) && w3=${#c3}
+		((${#c4} > w4)) && w4=${#c4}
+		((${#c5} > w5)) && w5=${#c5}
+	done
+
+	printf "%s  %s  %s  %s  %s\n" \
+		"$(pad_right "${headers[0]}" "$w1")" \
+		"$(pad_right "${headers[1]}" "$w2")" \
+		"$(pad_right "${headers[2]}" "$w3")" \
+		"$(pad_right "${headers[3]}" "$w4")" \
+		"$(pad_right "${headers[4]}" "$w5")"
+
+	printf "%s  %s  %s  %s  %s\n" \
+		"$(pad_right "$(printf '%*s' "$w1" '' | tr ' ' '-')" "$w1")" \
+		"$(pad_right "$(printf '%*s' "$w2" '' | tr ' ' '-')" "$w2")" \
+		"$(pad_right "$(printf '%*s' "$w3" '' | tr ' ' '-')" "$w3")" \
+		"$(pad_right "$(printf '%*s' "$w4" '' | tr ' ' '-')" "$w4")" \
+		"$(pad_right "$(printf '%*s' "$w5" '' | tr ' ' '-')" "$w5")"
+
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r c1 c2 c3 c4 c5 <<<"$row"
+		printf "%s  %s  %s  %s  %s\n" \
+			"$(pad_right "$c1" "$w1")" \
+			"$(pad_right "$c2" "$w2")" \
+			"$(pad_right "$c3" "$w3")" \
+			"$(pad_right "$c4" "$w4")" \
+			"$(pad_right "$c5" "$w5")"
+	done
+}
+
+maybe_open_repo() {
+	local repo="$1"
+	local recommended="${2:-}"
+	[[ "$OPEN_BROWSER" == true ]] || return 0
+	local key="$repo"
+	if [[ -n "$recommended" ]]; then
+		key="${repo}@${recommended}"
+	fi
+	[[ -v "OPENED_REPOS[$key]" ]] && return 0
+	OPENED_REPOS["$key"]=1
+
+	if [[ -n "$recommended" ]]; then
+		local release_url="https://github.com/$repo/releases/tag/$recommended"
+		local tree_url="https://github.com/$repo/tree/$recommended"
+		if gh browse "$release_url" >/dev/null 2>&1; then
+			debug "Opened '$repo' release tag '$recommended' in browser"
+			return 0
+		fi
+		if gh browse "$tree_url" >/dev/null 2>&1; then
+			debug "Opened '$repo' tag tree '$recommended' in browser"
+			return 0
+		fi
+		warn "Could not open '$repo' tag '$recommended'. Falling back to repo page."
+	fi
+
+	if gh repo view "$repo" --web >/dev/null 2>&1; then
+		debug "Opened '$repo' in browser"
+	else
+		warn "Could not open '$repo' in browser"
+	fi
+}
+
+compare_and_record() {
+	local action_repo="$1" current_ref="$2" location="$3"
+	local recommended status
+	recommended="$(latest_recommended_for_ref "$action_repo" "$current_ref" "$INCLUDE_MAJOR")"
+
+	if [[ -z "$recommended" ]]; then
+		status="unknown"
+		UNKNOWN_COUNT=$((UNKNOWN_COUNT + 1))
+		recommended="-"
+	elif [[ "$current_ref" == "$recommended" ]]; then
+		status="up-to-date"
+	else
+		status="outdated"
+		OUTDATED_COUNT=$((OUTDATED_COUNT + 1))
+		maybe_open_repo "$action_repo" "$recommended"
+	fi
+
+	SCAN_ROWS+=("$action_repo"$'\t'"$current_ref"$'\t'"$recommended"$'\t'"$status"$'\t'"$location")
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - GitHub Actions Latest checker
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [GLOBAL_OPTIONS] COMMAND [COMMAND_OPTIONS]
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}scan${NC}      Scan workflow files and detect outdated actions
+  ${GREEN}check${NC}     Check one action repo/current version pair
+  ${GREEN}browse${NC}    Open a repository in browser
+  ${GREEN}help${NC}      Show this help
+  ${GREEN}version${NC}   Show version
+
+${BOLD}GLOBAL OPTIONS:${NC}
+  ${YELLOW}-q, --quiet${NC}              Minimize output
+  ${YELLOW}-d, --debug${NC}              Enable debug output
+  ${YELLOW}-h, --help${NC}               Show help
+  ${YELLOW}-v, --version${NC}            Show version
+
+${BOLD}SCAN OPTIONS:${NC}
+  ${YELLOW}--path${NC} <dir>             Base directory to scan (default: .)
+  ${YELLOW}--include-major${NC}          Compare against latest stable across majors
+  ${YELLOW}--open${NC}                   Open outdated action repos on recommended release tag
+
+${BOLD}CHECK OPTIONS:${NC}
+  ${YELLOW}--repo${NC} <owner/repo>      Action repository to check
+  ${YELLOW}--current${NC} <tag>          Current version/tag in use (e.g. v4, optional)
+  ${YELLOW}--include-major${NC}          Compare against latest stable across majors
+  ${YELLOW}--open${NC}                   Open recommended release tag in browser
+
+${BOLD}BROWSE OPTIONS:${NC}
+  ${YELLOW}--repo${NC} <owner/repo>      Repository to open (default: detected from git remote)
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME scan
+  $SCRIPT_NAME scan --path /path/to/repo --open
+  $SCRIPT_NAME check --repo actions/checkout --current v4
+  $SCRIPT_NAME check --repo actions/checkout
+  $SCRIPT_NAME check actions/checkout
+  $SCRIPT_NAME check --repo actions/setup-node --current v3 --include-major
+  $SCRIPT_NAME browse --repo actions/checkout
+EOF
+}
+
+cmd_version() {
+	printf "%s %s\n" "$SCRIPT_NAME" "$VERSION"
+}
+
+cmd_scan() {
+	require_command gh "gh (https://cli.github.com/)"
+	require_command rg "ripgrep"
+
+	local workflows_dir="$SCAN_PATH/.github/workflows"
+	[[ -d "$workflows_dir" ]] || die "Workflows directory not found: $workflows_dir"
+
+	local entries=()
+	mapfile -t entries < <(rg -n --no-heading --color never -g '*.yml' -g '*.yaml' '^[[:space:]]*-[[:space:]]*uses:[[:space:]]*' "$workflows_dir" || true)
+
+	((${#entries[@]} > 0)) || {
+		warn "No action uses entries found in $workflows_dir"
+		return 0
+	}
+
+	local entry file line content location target action_repo current_ref
+	for entry in "${entries[@]}"; do
+		IFS=':' read -r file line content <<<"$entry"
+		location="${file}:${line}"
+
+		target=""
+		if ! target="$(parse_uses_target_from_line "$content")"; then
+			debug "Skipping unparsable line: $location"
+			continue
+		fi
+
+		local parsed
+		parsed="$(parse_action_repo_and_ref "$target" || true)"
+		if [[ -z "$parsed" ]]; then
+			debug "Skipping non-repo uses target '$target' at $location"
+			continue
+		fi
+		IFS=$'\t' read -r action_repo current_ref <<<"$parsed"
+
+		compare_and_record "$action_repo" "$current_ref" "$location"
+	done
+
+	((${#SCAN_ROWS[@]} > 0)) || {
+		warn "No supported action repo refs found"
+		return 0
+	}
+
+	printf "\n%s\n" "${BOLD}Action Version Report${NC}"
+	print_table "${SCAN_ROWS[@]}"
+	printf "\nOutdated: %d | Unknown: %d | Total: %d\n" "$OUTDATED_COUNT" "$UNKNOWN_COUNT" "${#SCAN_ROWS[@]}"
+
+	if ((OUTDATED_COUNT > 0)); then
+		exit 3
+	fi
+
+	success "All detected actions are up-to-date for the selected policy."
+}
+
+cmd_check() {
+	require_command gh "gh (https://cli.github.com/)"
+
+	[[ -n "$CHECK_REPO" ]] || die "Missing required option: --repo <owner/repo>"
+	if [[ -n "$CHECK_CURRENT" ]]; then
+		compare_and_record "$CHECK_REPO" "$CHECK_CURRENT" "-"
+	else
+		local latest
+		latest="$(latest_stable_tag_for_repo "$CHECK_REPO")"
+		[[ -n "$latest" ]] || die "Could not determine a stable latest tag for '$CHECK_REPO'."
+		SCAN_ROWS+=("$CHECK_REPO"$'\t'"-"$'\t'"$latest"$'\t'"latest"$'\t'"-")
+		maybe_open_repo "$CHECK_REPO" "$latest"
+	fi
+
+	printf "\n%s\n" "${BOLD}Action Version Report${NC}"
+	print_table "${SCAN_ROWS[@]}"
+
+	if ((OUTDATED_COUNT > 0)); then
+		exit 3
+	fi
+}
+
+cmd_browse() {
+	require_command gh "gh (https://cli.github.com/)"
+
+	local repo
+	repo="$(resolve_repo_for_browse)"
+	log "Opening $repo"
+	gh repo view "$repo" --web >/dev/null
+	success "Opened $repo"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_global_option() {
+	case "$1" in
+	-q | --quiet)
+		QUIET=true
+		return 0
+		;;
+	-d | --debug)
+		DEBUG=true
+		return 0
+		;;
+	-h | --help)
+		cmd_help
+		exit 0
+		;;
+	-v | --version)
+		cmd_version
+		exit 0
+		;;
+	esac
+	return 1
+}
+
+parse_scan_arguments() {
+	while [[ $# -gt 0 ]]; do
+		if parse_global_option "$1"; then
+			shift
+			continue
+		fi
+		case "$1" in
+		--path)
+			SCAN_PATH="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--include-major)
+			INCLUDE_MAJOR=true
+			shift
+			;;
+		--open)
+			OPEN_BROWSER=true
+			shift
+			;;
+		-*)
+			die "Unknown option for scan: $1"
+			;;
+		*)
+			die "Unexpected argument for scan: $1"
+			;;
+		esac
+	done
+}
+
+parse_check_arguments() {
+	while [[ $# -gt 0 ]]; do
+		if parse_global_option "$1"; then
+			shift
+			continue
+		fi
+		case "$1" in
+		--repo)
+			CHECK_REPO="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--current)
+			CHECK_CURRENT="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--include-major)
+			INCLUDE_MAJOR=true
+			shift
+			;;
+		--open)
+			OPEN_BROWSER=true
+			shift
+			;;
+		-*)
+			die "Unknown option for check: $1"
+			;;
+		*)
+			if [[ -z "$CHECK_REPO" ]]; then
+				CHECK_REPO="$1"
+			elif [[ -z "$CHECK_CURRENT" ]]; then
+				CHECK_CURRENT="$1"
+			else
+				die "Unexpected argument for check: $1"
+			fi
+			shift
+			;;
+		esac
+	done
+}
+
+parse_browse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		if parse_global_option "$1"; then
+			shift
+			continue
+		fi
+		case "$1" in
+		--repo)
+			BROWSE_REPO="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-*)
+			die "Unknown option for browse: $1"
+			;;
+		*)
+			die "Unexpected argument for browse: $1"
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command
+	if [[ $# -eq 0 ]]; then
+		command="scan"
+	elif [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+		command="check"
+	else
+		command="$1"
+		shift
+	fi
+
+	case "$command" in
+	scan)
+		parse_scan_arguments "$@"
+		cmd_scan
+		;;
+	check)
+		parse_check_arguments "$@"
+		cmd_check
+		;;
+	browse)
+		parse_browse_arguments "$@"
+		cmd_browse
+		;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
+}
+
+main "$@"
