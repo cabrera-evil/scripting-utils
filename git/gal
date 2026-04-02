@@ -30,6 +30,8 @@ DEBUG=false
 QUIET=false
 INCLUDE_MAJOR=false
 OPEN_BROWSER=false
+UPDATE_FILES=false
+PARALLEL_JOBS="${GAL_JOBS:-8}"
 SCAN_PATH="."
 CHECK_REPO=""
 CHECK_CURRENT=""
@@ -40,7 +42,10 @@ BROWSE_REPO=""
 # ===================================
 declare -A TAGS_CACHE=()
 declare -A OPENED_REPOS=()
+declare -A UPDATE_KEYS=()
+declare -A RECOMMEND_CACHE=()
 SCAN_ROWS=()
+PENDING_UPDATES=()
 OUTDATED_COUNT=0
 UNKNOWN_COUNT=0
 
@@ -75,6 +80,11 @@ die() {
 require_command() {
 	local cmd="$1" hint="${2:-$1}"
 	command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found. Install: $hint"
+}
+
+validate_positive_integer() {
+	local value="$1" name="$2"
+	[[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Invalid $name: '$value' (must be positive integer)"
 }
 
 trim_quotes() {
@@ -149,6 +159,47 @@ fetch_tags_for_repo() {
 	printf "%s" "$tags"
 }
 
+repo_cache_file() {
+	local repo="$1"
+	printf "%s" "${repo//\//__}.tags"
+}
+
+prefetch_tags_parallel() {
+	local repos=("$@")
+	((${#repos[@]} > 0)) || return 0
+	validate_positive_integer "$PARALLEL_JOBS" "jobs"
+	log "Prefetching tags for ${#repos[@]} repositories with $PARALLEL_JOBS workers..."
+
+	local tmp_dir
+	tmp_dir="$(mktemp -d)"
+
+	local -a pids=()
+	local repo file_path pid
+	for repo in "${repos[@]}"; do
+		file_path="$tmp_dir/$(repo_cache_file "$repo")"
+		(
+			gh api "repos/$repo/tags?per_page=100" --jq '.[].name' 2>/dev/null || true
+		) >"$file_path" &
+		pids+=("$!")
+
+		if ((${#pids[@]} >= PARALLEL_JOBS)); then
+			pid="${pids[0]}"
+			wait "$pid" || true
+			pids=("${pids[@]:1}")
+		fi
+	done
+
+	for pid in "${pids[@]}"; do
+		wait "$pid" || true
+	done
+
+	for repo in "${repos[@]}"; do
+		file_path="$tmp_dir/$(repo_cache_file "$repo")"
+		TAGS_CACHE["$repo"]="$(cat "$file_path" 2>/dev/null || true)"
+	done
+	rm -rf "$tmp_dir"
+}
+
 fetch_release_tag_for_repo() {
 	local repo="$1"
 	gh release view --repo "$repo" --json tagName -q .tagName 2>/dev/null || true
@@ -156,9 +207,16 @@ fetch_release_tag_for_repo() {
 
 latest_recommended_for_ref() {
 	local repo="$1" current_ref="$2" include_major="$3"
+	local cache_key="${repo}|${current_ref}|${include_major}"
+	if [[ -v "RECOMMEND_CACHE[$cache_key]" ]]; then
+		printf "%s" "${RECOMMEND_CACHE[$cache_key]}"
+		return
+	fi
+
 	local tags
 	tags="$(fetch_tags_for_repo "$repo")"
 	[[ -z "$tags" ]] && {
+		RECOMMEND_CACHE["$cache_key"]=""
 		printf ""
 		return
 	}
@@ -171,16 +229,21 @@ latest_recommended_for_ref() {
 	done <<<"$tags"
 
 	((${#stable_tags[@]} > 0)) || {
+		RECOMMEND_CACHE["$cache_key"]=""
 		printf ""
 		return
 	}
 
 	if [[ "$include_major" == true ]]; then
-		latest_of_tags "${stable_tags[@]}"
+		local latest
+		latest="$(latest_of_tags "${stable_tags[@]}")"
+		RECOMMEND_CACHE["$cache_key"]="$latest"
+		printf "%s" "$latest"
 		return
 	fi
 
 	if ! is_semver_like_tag "$current_ref"; then
+		RECOMMEND_CACHE["$cache_key"]=""
 		printf ""
 		return
 	fi
@@ -193,11 +256,15 @@ latest_recommended_for_ref() {
 	done
 
 	((${#same_major[@]} > 0)) || {
+		RECOMMEND_CACHE["$cache_key"]=""
 		printf ""
 		return
 	}
 
-	latest_of_tags "${same_major[@]}"
+	local latest
+	latest="$(latest_of_tags "${same_major[@]}")"
+	RECOMMEND_CACHE["$cache_key"]="$latest"
+	printf "%s" "$latest"
 }
 
 latest_stable_tag_for_repo() {
@@ -259,6 +326,21 @@ parse_action_repo_and_ref() {
 pad_right() {
 	local s="$1" width="$2"
 	printf "%-*s" "$width" "$s"
+}
+
+show_scan_progress() {
+	local phase="$1" current="$2" total="$3" location="$4"
+	[[ "$QUIET" == true ]] && return 0
+	if [[ -t 1 ]]; then
+		printf "\r${BLUE}▶${NC} %s %d/%d: %s\033[K" "$phase" "$current" "$total" "$location"
+	else
+		printf "%s %d/%d: %s\n" "$phase" "$current" "$total" "$location"
+	fi
+}
+
+finish_scan_progress() {
+	[[ "$QUIET" == true ]] && return 0
+	[[ -t 1 ]] && printf "\n"
 }
 
 print_table() {
@@ -333,8 +415,82 @@ maybe_open_repo() {
 	fi
 }
 
+queue_update() {
+	local original_target="$1" recommended="$2" location="$3"
+	[[ "$UPDATE_FILES" == true ]] || return 0
+	[[ "$location" == *:* ]] || return 0
+	[[ "$recommended" != "-" ]] || return 0
+	[[ "$original_target" == *@* ]] || return 0
+
+	local file="${location%:*}"
+	local line="${location##*:}"
+	[[ "$line" =~ ^[0-9]+$ ]] || return 0
+
+	local key="${file}:${line}"
+	[[ -v "UPDATE_KEYS[$key]" ]] && return 0
+	UPDATE_KEYS["$key"]=1
+
+	local old_ref="$original_target"
+	local new_ref="${original_target%@*}@${recommended}"
+	[[ "$old_ref" != "$new_ref" ]] || return 0
+	PENDING_UPDATES+=("$file"$'\t'"$line"$'\t'"$old_ref"$'\t'"$new_ref")
+}
+
+replace_literal_at_line() {
+	local file="$1" line="$2" old="$3" new="$4"
+	local tmp_file
+	tmp_file="$(mktemp)"
+
+	if awk -v n="$line" -v old="$old" -v new="$new" '
+	BEGIN { changed = 0 }
+	NR == n {
+		idx = index($0, old)
+		if (idx > 0) {
+			$0 = substr($0, 1, idx - 1) new substr($0, idx + length(old))
+			changed = 1
+		}
+	}
+	{ print }
+	END { exit(changed ? 0 : 1) }
+	' "$file" >"$tmp_file"; then
+		chmod --reference="$file" "$tmp_file"
+		mv "$tmp_file" "$file"
+		return 0
+	fi
+
+	rm -f "$tmp_file"
+	return 1
+}
+
+apply_pending_updates() {
+	[[ "$UPDATE_FILES" == true ]] || return 0
+	((${#PENDING_UPDATES[@]} > 0)) || {
+		log "No outdated refs eligible for --update."
+		return 0
+	}
+
+	local applied=0 failed=0 entry file line old_ref new_ref
+	log "Applying ${#PENDING_UPDATES[@]} update(s) to workflow files..."
+	for entry in "${PENDING_UPDATES[@]}"; do
+		IFS=$'\t' read -r file line old_ref new_ref <<<"$entry"
+		if replace_literal_at_line "$file" "$line" "$old_ref" "$new_ref"; then
+			applied=$((applied + 1))
+			debug "Updated $file:$line ($old_ref -> $new_ref)"
+		else
+			failed=$((failed + 1))
+			warn "Could not update $file:$line ($old_ref -> $new_ref)"
+		fi
+	done
+
+	if ((failed > 0)); then
+		warn "Applied $applied update(s), $failed failed."
+	else
+		success "Applied $applied update(s)."
+	fi
+}
+
 compare_and_record() {
-	local action_repo="$1" current_ref="$2" location="$3"
+	local action_repo="$1" current_ref="$2" location="$3" source_target="${4:-}"
 	local recommended status
 	recommended="$(latest_recommended_for_ref "$action_repo" "$current_ref" "$INCLUDE_MAJOR")"
 
@@ -347,6 +503,7 @@ compare_and_record() {
 	else
 		status="outdated"
 		OUTDATED_COUNT=$((OUTDATED_COUNT + 1))
+		queue_update "$source_target" "$recommended" "$location"
 		maybe_open_repo "$action_repo" "$recommended"
 	fi
 
@@ -378,7 +535,9 @@ ${BOLD}GLOBAL OPTIONS:${NC}
 
 ${BOLD}SCAN OPTIONS:${NC}
   ${YELLOW}--path${NC} <dir>             Base directory to scan (default: .)
+  ${YELLOW}--jobs${NC} <n>               Parallel tag lookups (default: 8 or GAL_JOBS)
   ${YELLOW}--include-major${NC}          Compare against latest stable across majors
+  ${YELLOW}--update${NC}                 Rewrite outdated refs to recommended tags
   ${YELLOW}--open${NC}                   Open outdated action repos on recommended release tag
 
 ${BOLD}CHECK OPTIONS:${NC}
@@ -392,6 +551,8 @@ ${BOLD}BROWSE OPTIONS:${NC}
 
 ${BOLD}EXAMPLES:${NC}
   $SCRIPT_NAME scan
+  $SCRIPT_NAME scan --jobs 16
+  $SCRIPT_NAME scan --update
   $SCRIPT_NAME scan --path /path/to/repo --open
   $SCRIPT_NAME check --repo actions/checkout --current v4
   $SCRIPT_NAME check --repo actions/checkout
@@ -413,7 +574,7 @@ cmd_scan() {
 	[[ -d "$workflows_dir" ]] || die "Workflows directory not found: $workflows_dir"
 
 	local entries=()
-	mapfile -t entries < <(rg -n --no-heading --color never -g '*.yml' -g '*.yaml' '^[[:space:]]*-[[:space:]]*uses:[[:space:]]*' "$workflows_dir" || true)
+	mapfile -t entries < <(rg -n --no-heading --color never -g '*.yml' -g '*.yaml' '^[[:space:]-]*uses:[[:space:]]*' "$workflows_dir" || true)
 
 	((${#entries[@]} > 0)) || {
 		warn "No action uses entries found in $workflows_dir"
@@ -421,9 +582,15 @@ cmd_scan() {
 	}
 
 	local entry file line content location target action_repo current_ref
+	local -a parsed_entries=()
+	declare -A unique_repos=()
+	local parsed
+	local total="${#entries[@]}" index=0
 	for entry in "${entries[@]}"; do
+		index=$((index + 1))
 		IFS=':' read -r file line content <<<"$entry"
 		location="${file}:${line}"
+		show_scan_progress "Indexing" "$index" "$total" "$location"
 
 		target=""
 		if ! target="$(parse_uses_target_from_line "$content")"; then
@@ -431,16 +598,33 @@ cmd_scan() {
 			continue
 		fi
 
-		local parsed
 		parsed="$(parse_action_repo_and_ref "$target" || true)"
 		if [[ -z "$parsed" ]]; then
 			debug "Skipping non-repo uses target '$target' at $location"
 			continue
 		fi
 		IFS=$'\t' read -r action_repo current_ref <<<"$parsed"
-
-		compare_and_record "$action_repo" "$current_ref" "$location"
+		parsed_entries+=("$action_repo"$'\t'"$current_ref"$'\t'"$location"$'\t'"$target")
+		unique_repos["$action_repo"]=1
 	done
+	finish_scan_progress
+
+	local -a repo_list=()
+	for action_repo in "${!unique_repos[@]}"; do
+		repo_list+=("$action_repo")
+	done
+	prefetch_tags_parallel "${repo_list[@]}"
+
+	total="${#parsed_entries[@]}"
+	index=0
+	local source_target
+	for parsed in "${parsed_entries[@]}"; do
+		index=$((index + 1))
+		IFS=$'\t' read -r action_repo current_ref location source_target <<<"$parsed"
+		show_scan_progress "Checking" "$index" "$total" "$location"
+		compare_and_record "$action_repo" "$current_ref" "$location" "$source_target"
+	done
+	finish_scan_progress
 
 	((${#SCAN_ROWS[@]} > 0)) || {
 		warn "No supported action repo refs found"
@@ -450,6 +634,7 @@ cmd_scan() {
 	printf "\n%s\n" "${BOLD}Action Version Report${NC}"
 	print_table "${SCAN_ROWS[@]}"
 	printf "\nOutdated: %d | Unknown: %d | Total: %d\n" "$OUTDATED_COUNT" "$UNKNOWN_COUNT" "${#SCAN_ROWS[@]}"
+	apply_pending_updates
 
 	if ((OUTDATED_COUNT > 0)); then
 		exit 3
@@ -526,8 +711,16 @@ parse_scan_arguments() {
 			SCAN_PATH="${2:?Missing value for $1}"
 			shift 2
 			;;
+		--jobs)
+			PARALLEL_JOBS="${2:?Missing value for $1}"
+			shift 2
+			;;
 		--include-major)
 			INCLUDE_MAJOR=true
+			shift
+			;;
+		--update)
+			UPDATE_FILES=true
 			shift
 			;;
 		--open)
