@@ -42,7 +42,7 @@ DUNST_ID=91190
 DIRS_TO_BACKUP=(
 	"$HOME/.ssh"
 	"$HOME/.gitconfig"
-	"$HOME/.gitignore_global"
+	"$HOME/.gitignore"
 	"$HOME/artifacts"
 	"$HOME/Backups"
 	"$HOME/dockerhub"
