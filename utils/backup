@@ -261,7 +261,7 @@ cmd_download() {
 	out_path="$TMP_DIR/$output_name"
 	[[ "$output_name" != *.zip ]] && out_path="$TMP_DIR/$output_name.zip"
 
-	wget -q -O "$out_path" "$url/$zip_name" || {
+	wget -O "$out_path" "$url/$zip_name" || {
 		die "Download failed"
 	}
 	cmd_restore "$out_path"
