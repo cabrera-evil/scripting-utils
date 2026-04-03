@@ -244,9 +244,24 @@ cmd_restore() {
 cmd_download() {
 	local ip="$1"
 	local url="http://$ip:$PORT"
-	local out_path="$TMP_DIR"
-	log "⬇Downloading from: $url"
-	wget -q -O "$out_path" "$url" || {
+	local page_url="$url/"
+	local output_name="${OUTPUT_NAME:-backup-download-$(date +%Y%m%d%H%M%S).zip}"
+	local zip_name=""
+	local out_path=""
+
+	mkdir -p "$TMP_DIR"
+	log "⬇Downloading from: $page_url"
+
+	zip_name=$(wget -q -O - "$page_url" | sed -n 's/.*href="\([^"]*\.zip\)".*/\1/p' | head -n 1)
+	if [[ -z "$zip_name" ]]; then
+		[[ "$output_name" != *.zip ]] && output_name="$output_name.zip"
+		zip_name="$output_name"
+	fi
+
+	out_path="$TMP_DIR/$output_name"
+	[[ "$output_name" != *.zip ]] && out_path="$TMP_DIR/$output_name.zip"
+
+	wget -q -O "$out_path" "$url/$zip_name" || {
 		die "Download failed"
 	}
 	cmd_restore "$out_path"
