@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+readonly VERSION="1.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+DRY_RUN=false
+RESET_ALL=false
+TARGET_VIDPID=""
+TARGET_PATH=""
+TARGET_BUS_DEV=""
+SYSFS_ROOT="/sys/bus/usb/devices"
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${BLUE}▶${NC} %s\n" "$*"
+}
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${GREEN}✓${NC} %s\n" "$*"
+}
+debug() {
+	[[ "$DEBUG" == true ]] || return 0
+	printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2
+}
+die() {
+	error "$*"
+	exit 1
+}
+
+# ========================
+# UTILITIES
+# ========================
+read_attr() {
+	local device_path="$1"
+	local attr="$2"
+	local fallback="${3:-}"
+
+	if [[ -r "$device_path/$attr" ]]; then
+		tr -d '\n' <"$device_path/$attr"
+	else
+		printf '%s' "$fallback"
+	fi
+}
+
+normalize_vidpid() {
+	local value="$1"
+
+	[[ "$value" =~ ^[[:xdigit:]]{4}:[[:xdigit:]]{4}$ ]] || die "Invalid VID:PID '$value'. Expected format: 046d:0ac4"
+	printf '%s' "${value,,}"
+}
+
+device_vidpid() {
+	local device_path="$1"
+	local vendor product
+
+	vendor="$(read_attr "$device_path" idVendor)"
+	product="$(read_attr "$device_path" idProduct)"
+	printf '%s:%s' "${vendor,,}" "${product,,}"
+}
+
+device_bus_dev() {
+	local device_path="$1"
+	local busnum devnum
+
+	busnum="$(read_attr "$device_path" busnum)"
+	devnum="$(read_attr "$device_path" devnum)"
+	printf '%s:%s' "$busnum" "$devnum"
+}
+
+device_label() {
+	local device_path="$1"
+	local manufacturer product serial
+
+	manufacturer="$(read_attr "$device_path" manufacturer)"
+	product="$(read_attr "$device_path" product)"
+	serial="$(read_attr "$device_path" serial)"
+
+	if [[ -n "$manufacturer" && -n "$product" ]]; then
+		printf '%s %s' "$manufacturer" "$product"
+	elif [[ -n "$product" ]]; then
+		printf '%s' "$product"
+	elif [[ -n "$manufacturer" ]]; then
+		printf '%s' "$manufacturer"
+	elif [[ -n "$serial" ]]; then
+		printf 'serial:%s' "$serial"
+	else
+		printf 'unknown'
+	fi
+}
+
+is_usb_device() {
+	local device_path="$1"
+
+	[[ -f "$device_path/idVendor" && -f "$device_path/idProduct" ]]
+}
+
+find_devices() {
+	local device_path
+
+	[[ -d "$SYSFS_ROOT" ]] || die "USB sysfs path not found: $SYSFS_ROOT"
+
+	for device_path in "$SYSFS_ROOT"/*; do
+		[[ -e "$device_path" ]] || continue
+		is_usb_device "$device_path" || continue
+		printf '%s\n' "$device_path"
+	done
+}
+
+matching_devices() {
+	local device_path name matched
+	local target_vidpid=""
+
+	if [[ -n "$TARGET_VIDPID" ]]; then
+		target_vidpid="$(normalize_vidpid "$TARGET_VIDPID")"
+	fi
+
+	while IFS= read -r device_path; do
+		name="$(basename "$device_path")"
+		matched=true
+
+		if [[ -n "$TARGET_PATH" && "$name" != "$TARGET_PATH" ]]; then
+			matched=false
+		fi
+
+		if [[ -n "$target_vidpid" && "$(device_vidpid "$device_path")" != "$target_vidpid" ]]; then
+			matched=false
+		fi
+
+		if [[ -n "$TARGET_BUS_DEV" && "$(device_bus_dev "$device_path")" != "$TARGET_BUS_DEV" ]]; then
+			matched=false
+		fi
+
+		[[ "$matched" == true ]] && printf '%s\n' "$device_path"
+	done < <(find_devices)
+}
+
+require_selector() {
+	if [[ -z "$TARGET_VIDPID" && -z "$TARGET_PATH" && -z "$TARGET_BUS_DEV" ]]; then
+		die "Select a device with --vidpid, --path, or --bus-dev."
+	fi
+}
+
+require_root_for_reset() {
+	if [[ "$DRY_RUN" == true ]]; then
+		return 0
+	fi
+
+	if [[ "$SYSFS_ROOT" != "/sys/bus/usb/devices" ]]; then
+		return 0
+	fi
+
+	[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Reset requires root. Re-run with sudo, or use --dry-run to preview."
+}
+
+reset_device() {
+	local device_path="$1"
+	local name driver_path
+	name="$(basename "$device_path")"
+
+	[[ -d "$device_path/driver" || -L "$device_path/driver" ]] || die "No USB driver binding found for $name."
+	driver_path="$(readlink -f "$device_path/driver")"
+	[[ -n "$driver_path" && -d "$driver_path" ]] || die "Unable to resolve USB driver path for $name."
+
+	if [[ "$DRY_RUN" == true ]]; then
+		log "[DRY RUN] unbind $name"
+		log "[DRY RUN] bind $name"
+		return 0
+	fi
+
+	debug "Unbinding USB device: $name"
+	printf '%s' "$name" >"$driver_path/unbind"
+	sleep 1
+	debug "Binding USB device: $name"
+	printf '%s' "$name" >"$driver_path/bind"
+}
+
+print_device_row() {
+	local device_path="$1"
+	local name vidpid bus_dev label
+
+	name="$(basename "$device_path")"
+	vidpid="$(device_vidpid "$device_path")"
+	bus_dev="$(device_bus_dev "$device_path")"
+	label="$(device_label "$device_path")"
+
+	printf '%-12s %-9s %-7s %s\n' "$name" "$vidpid" "$bus_dev" "$label"
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - List and reset USB devices through Linux sysfs
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}list${NC}                List USB devices
+  ${GREEN}reset${NC}               Reset one selected USB device
+  ${GREEN}help${NC}                Show this help message
+  ${GREEN}version${NC}             Show script version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--vidpid <VID:PID>${NC}          Match by vendor/product ID, e.g. --vidpid 046d:0ac4
+  ${YELLOW}--path <PATH>${NC}               Match by sysfs USB path, e.g. --path 1-2
+  ${YELLOW}--bus-dev <BUS:DEV>${NC}         Match by USB bus/device numbers, e.g. --bus-dev 001:004
+  ${YELLOW}--all${NC}                       Reset all matched devices instead of requiring one match
+  ${YELLOW}--dry-run${NC}                   Show reset actions without changing hardware
+  ${YELLOW}--sysfs-root <DIR>${NC}          Override sysfs device root (default: $SYSFS_ROOT)
+  ${YELLOW}-q, --quiet${NC}                 Minimize output
+  ${YELLOW}-d, --debug${NC}                 Enable debug output
+  ${YELLOW}-h, --help${NC}                  Show help
+  ${YELLOW}-v, --version${NC}               Show version
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME list
+  sudo $SCRIPT_NAME reset --vidpid 046d:0ac4
+  $SCRIPT_NAME reset --vidpid 046d:0ac4 --dry-run
+  sudo $SCRIPT_NAME reset --path 1-2
+EOF
+}
+
+cmd_version() {
+	printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"
+}
+
+cmd_list() {
+	local count=0
+	local device_path
+
+	printf '%-12s %-9s %-7s %s\n' "PATH" "VID:PID" "BUS:DEV" "NAME"
+	while IFS= read -r device_path; do
+		print_device_row "$device_path"
+		count=$((count + 1))
+	done < <(find_devices)
+
+	[[ "$count" -gt 0 ]] || warn "No USB devices found."
+}
+
+cmd_reset() {
+	local devices=()
+	local device_path count
+
+	require_selector
+	require_root_for_reset
+
+	while IFS= read -r device_path; do
+		devices+=("$device_path")
+	done < <(matching_devices)
+
+	count="${#devices[@]}"
+	[[ "$count" -gt 0 ]] || die "No USB devices matched the selected criteria."
+
+	if [[ "$count" -gt 1 && "$RESET_ALL" != true ]]; then
+		die "Selection matched $count devices. Use a narrower selector or pass --all."
+	fi
+
+	log "Reset plan: $count device(s)"
+	for device_path in "${devices[@]}"; do
+		print_device_row "$device_path"
+	done
+
+	for device_path in "${devices[@]}"; do
+		reset_device "$device_path"
+	done
+
+	success "Reset complete."
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--vidpid)
+			TARGET_VIDPID="${2:?Missing value for $1}"
+			normalize_vidpid "$TARGET_VIDPID" >/dev/null
+			shift 2
+			;;
+		--path)
+			TARGET_PATH="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--bus-dev)
+			TARGET_BUS_DEV="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--all)
+			RESET_ALL=true
+			shift
+			;;
+		--dry-run)
+			DRY_RUN=true
+			shift
+			;;
+		--sysfs-root)
+			SYSFS_ROOT="${2:?Missing value for $1}"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	case "$command" in
+	list) cmd_list ;;
+	reset) cmd_reset ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
+	*) die "Unknown command: '$command'. Use '$SCRIPT_NAME help'." ;;
+	esac
+}
+
+main "$@"
