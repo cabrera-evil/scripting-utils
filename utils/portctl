@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+readonly VERSION="1.1.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+DRY_RUN=false
+FORCE=false
+PROTOCOL="tcp"
+PROTOCOL_EXPLICIT=false
+COMMAND=""
+PORT=""
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${BLUE}▶${NC} %s\n" "$*"
+}
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${GREEN}✓${NC} %s\n" "$*"
+}
+debug() {
+	[[ "$DEBUG" == true ]] || return 0
+	printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2
+}
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+require_command() {
+	command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed or not in PATH."
+}
+
+validate_port() {
+	[[ -n "$PORT" ]] || die "Port is required. Use '$SCRIPT_NAME show <PORT>'."
+	[[ "$PORT" =~ ^[0-9]+$ ]] || die "Invalid port '$PORT'. Expected a number from 1 to 65535."
+	((10#$PORT >= 1 && 10#$PORT <= 65535)) || die "Invalid port '$PORT'. Expected a number from 1 to 65535."
+}
+
+find_port_pids() {
+	local query
+
+	case "$PROTOCOL" in
+	tcp) query=(lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN) ;;
+	udp) query=(lsof -nP -t -iUDP:"$PORT") ;;
+	all)
+		{
+			lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+			lsof -nP -t -iUDP:"$PORT" 2>/dev/null || true
+		} | awk '/^[0-9]+$/ && !seen[$0]++'
+		return
+		;;
+	esac
+
+	debug "Looking up $PROTOCOL port $PORT"
+	"${query[@]}" 2>/dev/null | awk '/^[0-9]+$/ && !seen[$0]++' || true
+}
+
+load_port_pids() {
+	local -n destination="$1"
+	local pid
+
+	destination=()
+	while IFS= read -r pid; do
+		[[ -n "$pid" ]] && destination+=("$pid")
+	done < <(find_port_pids)
+}
+
+print_processes() {
+	local pids=("$@")
+	local pid
+
+	printf "${BOLD}%-8s %-8s %-16s %-12s %s${NC}\n" "PID" "PPID" "USER" "ELAPSED" "COMMAND"
+	for pid in "${pids[@]}"; do
+		ps -p "$pid" -o pid= -o ppid= -o user= -o etime= -o command= || warn "Unable to inspect PID $pid."
+	done
+}
+
+print_socket_list() {
+	local protocol="$1"
+	local output=""
+	local query
+
+	case "$protocol" in
+	tcp) query=(lsof -nP -iTCP -sTCP:LISTEN) ;;
+	udp) query=(lsof -nP -iUDP) ;;
+	esac
+
+	output="$("${query[@]}" 2>/dev/null || true)"
+	[[ -n "$output" ]] || return 1
+
+	log "${protocol^^} ports:"
+	printf '%s\n' "$output"
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Inspect and stop processes listening on a port
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND <PORT>
+  $SCRIPT_NAME [OPTIONS] <PORT>
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}list${NC}                List listening TCP and bound UDP ports
+  ${GREEN}show${NC}                Show the process listening on a port
+  ${GREEN}kill${NC}                Send SIGTERM to the process listening on a port
+  ${GREEN}help${NC}                Show this help message
+  ${GREEN}version${NC}             Show script version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--protocol <tcp|udp|all>${NC}    Protocol filter (show/kill default: tcp; list default: all)
+  ${YELLOW}--force${NC}                     Send SIGKILL instead of SIGTERM
+  ${YELLOW}--dry-run${NC}                   Show which process would be stopped
+  ${YELLOW}-q, --quiet${NC}                 Minimize output
+  ${YELLOW}-d, --debug${NC}                 Enable debug output
+  ${YELLOW}-h, --help${NC}                  Show help
+  ${YELLOW}-v, --version${NC}               Show version
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME list
+  $SCRIPT_NAME list --protocol tcp
+  $SCRIPT_NAME show 3000
+  $SCRIPT_NAME 3000
+  $SCRIPT_NAME kill 3000
+  $SCRIPT_NAME kill 5353 --protocol udp --dry-run
+  $SCRIPT_NAME kill 3000 --force
+EOF
+}
+
+cmd_version() {
+	printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"
+}
+
+cmd_list() {
+	local found=false
+	local protocols=()
+	local protocol
+
+	require_command lsof
+	if [[ "$PROTOCOL_EXPLICIT" == true && "$PROTOCOL" != "all" ]]; then
+		protocols=("$PROTOCOL")
+	else
+		protocols=(tcp udp)
+	fi
+
+	for protocol in "${protocols[@]}"; do
+		if print_socket_list "$protocol"; then
+			found=true
+		fi
+	done
+
+	if [[ "$found" != true ]]; then
+		if [[ "$PROTOCOL_EXPLICIT" == true && "$PROTOCOL" != "all" ]]; then
+			warn "No $PROTOCOL ports found."
+		else
+			warn "No listening TCP or bound UDP ports found."
+		fi
+		return 1
+	fi
+}
+
+cmd_show() {
+	local pids=()
+
+	validate_port
+	require_command lsof
+	require_command ps
+	load_port_pids pids
+
+	if [[ "${#pids[@]}" -eq 0 ]]; then
+		warn "No process is listening on $PROTOCOL port $PORT."
+		return 1
+	fi
+
+	log "Process listening on $PROTOCOL port $PORT:"
+	print_processes "${pids[@]}"
+}
+
+cmd_kill() {
+	local pids=()
+	local pid signal failed=false
+
+	validate_port
+	require_command lsof
+	require_command ps
+	load_port_pids pids
+
+	if [[ "${#pids[@]}" -eq 0 ]]; then
+		warn "No process is listening on $PROTOCOL port $PORT."
+		return 1
+	fi
+
+	print_processes "${pids[@]}"
+	signal="TERM"
+	[[ "$FORCE" == true ]] && signal="KILL"
+
+	if [[ "$DRY_RUN" == true ]]; then
+		log "[DRY RUN] Would send SIG$signal to PID(s): ${pids[*]}"
+		return 0
+	fi
+
+	for pid in "${pids[@]}"; do
+		if ! kill -"$signal" "$pid" 2>/dev/null; then
+			warn "Unable to send SIG$signal to PID $pid. Check process ownership or permissions."
+			failed=true
+		fi
+	done
+
+	[[ "$failed" != true ]] || return 1
+	success "Sent SIG$signal to PID(s) ${pids[*]} on $PROTOCOL port $PORT."
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--protocol)
+			PROTOCOL="${2:?Missing value for $1}"
+			[[ "$PROTOCOL" == "tcp" || "$PROTOCOL" == "udp" || "$PROTOCOL" == "all" ]] || die "Invalid protocol '$PROTOCOL'. Use tcp, udp, or all."
+			PROTOCOL_EXPLICIT=true
+			shift 2
+			;;
+		--force)
+			FORCE=true
+			shift
+			;;
+		--dry-run)
+			DRY_RUN=true
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			COMMAND="help"
+			shift
+			;;
+		-v | --version)
+			COMMAND="version"
+			shift
+			;;
+		-*) die "Unknown option: $1" ;;
+		*)
+			if [[ -z "$COMMAND" ]]; then
+				COMMAND="$1"
+			elif [[ -z "$PORT" ]]; then
+				PORT="$1"
+			else
+				die "Unexpected argument: $1"
+			fi
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	parse_arguments "$@"
+	COMMAND="${COMMAND:-help}"
+
+	if [[ "$COMMAND" =~ ^[0-9]+$ && -z "$PORT" ]]; then
+		PORT="$COMMAND"
+		COMMAND="show"
+	fi
+
+	case "$COMMAND" in
+	list) cmd_list ;;
+	show | status) cmd_show ;;
+	kill) cmd_kill ;;
+	help) cmd_help ;;
+	version) cmd_version ;;
+	*) die "Unknown command: '$COMMAND'. Use '$SCRIPT_NAME help'." ;;
+	esac
+}
+
+main "$@"
