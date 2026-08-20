@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+readonly VERSION="1.0.0"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly MAGENTA=$'\033[0;35m'
+	readonly BOLD=$'\033[1m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' BOLD='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+NOTIFY=true
+DUNST_ID=91191
+
+ARCHIVE_DIR="$HOME/Backups/encrypted"
+DESTINATION="$HOME"
+TMP_DIR="/tmp"
+CIPHER_ALGO="AES256"
+COMPRESSION_LEVEL="-0"
+ARMOR=false
+OUTPUT_NAME=""
+PASSPHRASE_FILE=""
+PASSPHRASE_ENV=""
+INPUT_PATH=""
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${BLUE}▶${NC} %s\n" "$*"
+}
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() {
+	[[ "$QUIET" != true ]] || return 0
+	printf "${GREEN}✓${NC} %s\n" "$*"
+}
+debug() {
+	[[ "$DEBUG" == true ]] || return 0
+	printf "${MAGENTA}⚈${NC} DEBUG: %s\n" "$*" >&2
+}
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+require_command() {
+	command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed or not in PATH."
+}
+
+notify() {
+	[[ "$NOTIFY" == true ]] && command -v dunstify >/dev/null 2>&1 && dunstify "cryptctl" "$1" -r "$DUNST_ID" || true
+}
+
+validate_passphrase_options() {
+	if [[ -n "$PASSPHRASE_FILE" && -n "$PASSPHRASE_ENV" ]]; then
+		die "Use only one of --passphrase-file or --passphrase-env."
+	fi
+	if [[ -n "$PASSPHRASE_FILE" ]]; then
+		[[ -f "$PASSPHRASE_FILE" ]] || die "Passphrase file not found: $PASSPHRASE_FILE"
+	fi
+	if [[ -n "$PASSPHRASE_ENV" ]]; then
+		[[ -n "${!PASSPHRASE_ENV:-}" ]] || die "Environment variable '$PASSPHRASE_ENV' is not set or empty."
+	fi
+}
+
+# Populates the GPG_ARGS array with batch/passphrase options.
+# When no passphrase source is given, gpg falls back to an interactive
+# pinentry prompt, so --batch/--yes are omitted in that case.
+build_gpg_args() {
+	GPG_ARGS=()
+	if [[ -n "$PASSPHRASE_FILE" ]]; then
+		GPG_ARGS+=(--batch --yes --passphrase-file "$PASSPHRASE_FILE")
+	elif [[ -n "$PASSPHRASE_ENV" ]]; then
+		GPG_ARGS+=(--batch --yes --pinentry-mode loopback --passphrase-fd 3)
+	fi
+}
+
+is_zip_file() {
+	local file="$1"
+	[[ "$(head -c 2 "$file" 2>/dev/null)" == "PK" ]]
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Encrypt and decrypt files/directories with a GPG passphrase
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}encrypt${NC}             Encrypt a file or directory with a passphrase
+  ${GREEN}decrypt${NC}             Decrypt a .gpg/.asc archive
+  ${GREEN}list${NC}                List local encrypted archives
+  ${GREEN}help${NC}                Show this help message
+  ${GREEN}version${NC}             Show script version
+
+${BOLD}OPTIONS:${NC}
+  ${YELLOW}--file <PATH>${NC}                 File or directory to encrypt/decrypt (required)
+  ${YELLOW}--dir <DIR>${NC}                   Directory to store encrypted archives (default: $ARCHIVE_DIR)
+  ${YELLOW}--dest <DIR>${NC}                  Decrypt destination directory (default: $DESTINATION)
+  ${YELLOW}--tmp <DIR>${NC}                   Temp working directory (default: $TMP_DIR)
+  ${YELLOW}--output <NAME>${NC}               Override output file name
+  ${YELLOW}--cipher <ALGO>${NC}               GPG cipher algorithm (default: $CIPHER_ALGO)
+  ${YELLOW}--compress <0-9>${NC}              Zip compression level when archiving a directory (default: 0)
+  ${YELLOW}--armor${NC}                       ASCII-armor the encrypted output (.asc)
+  ${YELLOW}--passphrase-file <FILE>${NC}      Read the passphrase from a file
+  ${YELLOW}--passphrase-env <VAR>${NC}        Read the passphrase from an environment variable
+  ${YELLOW}--no-notify${NC}                   Disable dunstify popups
+  ${YELLOW}-q, --quiet${NC}                   Minimize output
+  ${YELLOW}-d, --debug${NC}                   Enable debug output
+  ${YELLOW}-h, --help${NC}                    Show help
+  ${YELLOW}-v, --version${NC}                 Show version
+
+${BOLD}NOTES:${NC}
+  With no --passphrase-file/--passphrase-env, gpg prompts interactively
+  via pinentry. Passphrases are never accepted as plain CLI arguments to
+  avoid leaking them through the process list or shell history.
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME encrypt --file ~/Documents/secrets
+  $SCRIPT_NAME encrypt --file ~/report.pdf --armor
+  $SCRIPT_NAME encrypt --file ~/Documents/secrets --passphrase-env CRYPTCTL_PASS
+  $SCRIPT_NAME decrypt --file ~/Backups/encrypted/secrets.gpg --dest ~/Restore
+  $SCRIPT_NAME list
+EOF
+}
+
+cmd_encrypt() {
+	local input="$1"
+	[[ -e "$input" ]] || die "Path not found: $input"
+
+	mkdir -p "$ARCHIVE_DIR"
+	local base ext output
+	base="$(basename "$input")"
+	ext=".gpg"
+	$ARMOR && ext=".asc"
+	output="$ARCHIVE_DIR/${OUTPUT_NAME:-$base}$ext"
+
+	local gpg_opts=(--symmetric --cipher-algo "$CIPHER_ALGO" --output "$output")
+	$ARMOR && gpg_opts+=(--armor)
+
+	build_gpg_args
+	notify "Encrypting: $base"
+	log "Encrypting: $input -> $output"
+
+	if [[ -d "$input" ]]; then
+		require_command zip
+		local parent
+		parent="$(cd "$(dirname "$input")" && pwd)"
+		if [[ -n "$PASSPHRASE_ENV" ]]; then
+			(cd "$parent" && zip -r "$COMPRESSION_LEVEL" - "$base" | gpg "${GPG_ARGS[@]}" "${gpg_opts[@]}") 3<<<"${!PASSPHRASE_ENV}"
+		else
+			(cd "$parent" && zip -r "$COMPRESSION_LEVEL" - "$base") | gpg "${GPG_ARGS[@]}" "${gpg_opts[@]}"
+		fi
+	else
+		if [[ -n "$PASSPHRASE_ENV" ]]; then
+			gpg "${GPG_ARGS[@]}" "${gpg_opts[@]}" "$input" 3<<<"${!PASSPHRASE_ENV}"
+		else
+			gpg "${GPG_ARGS[@]}" "${gpg_opts[@]}" "$input"
+		fi
+	fi
+
+	notify "Encryption complete: $(basename "$output")"
+	success "Encrypted: $output"
+}
+
+cmd_decrypt() {
+	local input="$1"
+	[[ -f "$input" ]] || die "File not found: $input"
+
+	mkdir -p "$TMP_DIR" "$DESTINATION"
+	local base tmp_out
+	base="$(basename "$input")"
+	base="${base%.gpg}"
+	base="${base%.asc}"
+	tmp_out="$TMP_DIR/${OUTPUT_NAME:-$base}.decrypted"
+
+	build_gpg_args
+	notify "Decrypting: $base"
+	log "Decrypting: $input"
+
+	if [[ -n "$PASSPHRASE_ENV" ]]; then
+		gpg "${GPG_ARGS[@]}" --decrypt --output "$tmp_out" "$input" 3<<<"${!PASSPHRASE_ENV}"
+	else
+		gpg "${GPG_ARGS[@]}" --decrypt --output "$tmp_out" "$input"
+	fi
+
+	if is_zip_file "$tmp_out"; then
+		debug "Decrypted payload is a zip archive; extracting to $DESTINATION"
+		unzip -o "$tmp_out" -d "$DESTINATION" >/dev/null
+		rm -f "$tmp_out"
+		notify "Decryption complete: extracted to $DESTINATION"
+		success "Decrypted and extracted to: $DESTINATION"
+	else
+		local final="$DESTINATION/${OUTPUT_NAME:-$base}"
+		mv -f "$tmp_out" "$final"
+		notify "Decryption complete: $(basename "$final")"
+		success "Decrypted: $final"
+	fi
+}
+
+cmd_list() {
+	log "Encrypted archives in $ARCHIVE_DIR:"
+	ls -lh "$ARCHIVE_DIR"/*.gpg "$ARCHIVE_DIR"/*.asc 2>/dev/null || log "No encrypted archives found."
+}
+
+cmd_version() {
+	printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--file)
+			INPUT_PATH="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--dir)
+			ARCHIVE_DIR="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--dest)
+			DESTINATION="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--tmp)
+			TMP_DIR="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--output)
+			OUTPUT_NAME="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--cipher)
+			CIPHER_ALGO="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--compress)
+			local level="${2:?Missing value for $1}"
+			[[ "$level" =~ ^[0-9]$ ]] || die "Invalid compression level '$level'. Use 0-9."
+			COMPRESSION_LEVEL="-$level"
+			shift 2
+			;;
+		--armor)
+			ARMOR=true
+			shift
+			;;
+		--passphrase-file)
+			PASSPHRASE_FILE="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--passphrase-env)
+			PASSPHRASE_ENV="${2:?Missing value for $1}"
+			shift 2
+			;;
+		--no-notify)
+			NOTIFY=false
+			shift
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	local command="${1:-help}"
+	parse_arguments "$@"
+
+	require_command gpg
+	[[ "$command" == "encrypt" || "$command" == "decrypt" ]] && validate_passphrase_options
+
+	case "$command" in
+	encrypt)
+		[[ -z "$INPUT_PATH" ]] && die "Missing --file option for encrypt command"
+		cmd_encrypt "$INPUT_PATH"
+		;;
+	decrypt)
+		[[ -z "$INPUT_PATH" ]] && die "Missing --file option for decrypt command"
+		cmd_decrypt "$INPUT_PATH"
+		;;
+	list) cmd_list ;;
+	help)
+		cmd_help
+		;;
+	version)
+		cmd_version
+		;;
+	*)
+		die "Unknown command: '$command'. Use '$SCRIPT_NAME help'."
+		;;
+	esac
+}
+
+main "$@"
