@@ -5,7 +5,7 @@ set -euo pipefail
 # METADATA
 # ===================================
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 
 # ===================================
 # COLORS
@@ -60,10 +60,29 @@ EXCLUDE_PATTERN=(
 	"*/.next/*"
 	"*/.pnpm/*"
 	"*/.venv/*"
+	"*/.cache/*"
+	"*/.cxx/*"
+	"*/.gradle/*"
+	"*/.mypy_cache/*"
+	"*/.pytest_cache/*"
+	"*/.rag/*"
+	"*/.ruff_cache/*"
+	"*/.terraform/*"
+	"*/.ansible/*"
+	"*/__pycache__/*"
+	"*/coverage/*"
+	"*/htmlcov/*"
 	"*.zip"
 	"*.tar.gz"
 	"*.log"
 	"*.tmp"
+	"*.pyc"
+	"*.pyo"
+	"*.eslintcache"
+	"*.tsbuildinfo"
+	"*.coverage"
+	".DS_Store"
+	"Thumbs.db"
 )
 
 # ===================================
