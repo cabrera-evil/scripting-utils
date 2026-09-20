@@ -1,0 +1,405 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ===================================
+# METADATA
+# ===================================
+SCRIPT_NAME=$(basename "$0")
+readonly SCRIPT_NAME
+readonly VERSION="1.0.1"
+
+# ===================================
+# COLORS
+# ===================================
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+	readonly RED=$'\033[0;31m'
+	readonly GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[0;33m'
+	readonly BLUE=$'\033[0;34m'
+	readonly BOLD=$'\033[1m'
+	readonly NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
+fi
+
+# ===================================
+# CONFIGURATION
+# ===================================
+DEBUG=false
+QUIET=false
+CONFIG_FILE=""
+CLI_BACKEND=""
+CLI_REPOSITORY=""
+CLI_PASSWORD_FILE=""
+BACKEND=""
+REPOSITORY=""
+PASSWORD_FILE=""
+SNAPSHOT="latest"
+DESTINATION="$HOME/Restore/restic"
+COMMAND="help"
+DIRS_TO_BACKUP=(
+	"$HOME/.ssh"
+	"$HOME/.gitconfig"
+	"$HOME/.gitignore"
+	"$HOME/artifacts"
+	"$HOME/Backups"
+	"$HOME/dockerhub"
+	"$HOME/Documents"
+	"$HOME/git"
+	"$HOME/npm"
+	"$HOME/Pictures"
+	"$HOME/server"
+	"$HOME/work"
+)
+EXCLUDE_PATTERN=(
+	"*/node_modules/*"
+	"*/dist/*"
+	"*/build/*"
+	"*/.next/*"
+	"*/.pnpm/*"
+	"*/.venv/*"
+	"*/.cache/*"
+	"*/.cxx/*"
+	"*/.gradle/*"
+	"*/.mypy_cache/*"
+	"*/.pytest_cache/*"
+	"*/.rag/*"
+	"*/.ruff_cache/*"
+	"*/.terraform/*"
+	"*/.ansible/*"
+	"*/__pycache__/*"
+	"*/coverage/*"
+	"*/htmlcov/*"
+	"*.zip"
+	"*.tar.gz"
+	"*.log"
+	"*.tmp"
+	"*.pyc"
+	"*.pyo"
+	"*.eslintcache"
+	"*.tsbuildinfo"
+	"*.coverage"
+	".DS_Store"
+	"Thumbs.db"
+)
+RESTIC_ARGS=()
+
+# ===================================
+# LOGGING FUNCTIONS
+# ===================================
+log() {
+	if [[ "$QUIET" != true ]]; then
+		printf "${BLUE}▶${NC} %s\n" "$*"
+	fi
+}
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
+error() { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+success() {
+	if [[ "$QUIET" != true ]]; then
+		printf "${GREEN}✓${NC} %s\n" "$*"
+	fi
+}
+debug() {
+	if [[ "$DEBUG" == true ]]; then
+		printf "DEBUG: %s\n" "$*" >&2
+	fi
+}
+die() {
+	error "$*"
+	exit 1
+}
+
+# ===================================
+# UTILITIES
+# ===================================
+require_cmd() {
+	command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed or not in PATH."
+}
+
+require_option_value() {
+	[[ $# -ge 2 && -n "$2" ]] || die "Missing value for option: $1"
+}
+
+trim() {
+	local value="$1"
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	printf '%s' "$value"
+}
+
+load_config() {
+	local line key value
+	local config_backend=""
+	local config_repository=""
+	local config_password_file=""
+
+	[[ -f "$CONFIG_FILE" ]] || die "Config file not found: $CONFIG_FILE"
+	[[ -r "$CONFIG_FILE" ]] || die "Config file is not readable: $CONFIG_FILE"
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line=$(trim "$line")
+		[[ -z "$line" || "$line" == \#* ]] && continue
+		[[ "$line" == *=* ]] || die "Invalid config entry: $line"
+		key=$(trim "${line%%=*}")
+		value=$(trim "${line#*=}")
+		[[ -n "$value" ]] || die "Missing value for config key: $key"
+
+		case "$key" in
+		backend) config_backend="$value" ;;
+		repository) config_repository="$value" ;;
+		password_file) config_password_file="$value" ;;
+		*) die "Unknown config key: $key" ;;
+		esac
+	done <"$CONFIG_FILE"
+
+	BACKEND="${config_backend:-${RESTIC_BACKUP_BACKEND:-}}"
+	REPOSITORY="${config_repository:-${RESTIC_REPOSITORY:-}}"
+	PASSWORD_FILE="${config_password_file:-${RESTIC_PASSWORD_FILE:-}}"
+}
+
+resolve_configuration() {
+	if [[ -n "$CONFIG_FILE" ]]; then
+		load_config
+	else
+		BACKEND="${RESTIC_BACKUP_BACKEND:-}"
+		REPOSITORY="${RESTIC_REPOSITORY:-}"
+		PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-}"
+	fi
+
+	BACKEND="${CLI_BACKEND:-$BACKEND}"
+	REPOSITORY="${CLI_REPOSITORY:-$REPOSITORY}"
+	PASSWORD_FILE="${CLI_PASSWORD_FILE:-$PASSWORD_FILE}"
+}
+
+validate_password_file() {
+	local mode permissions
+	[[ -f "$PASSWORD_FILE" ]] || die "Password file not found: $PASSWORD_FILE"
+	[[ -r "$PASSWORD_FILE" ]] || die "Password file is not readable: $PASSWORD_FILE"
+	mode=$(stat -c '%a' "$PASSWORD_FILE")
+	permissions=$((8#$mode))
+	(((permissions & 077) == 0)) || die "Password file must not be readable by group or other users: $PASSWORD_FILE"
+}
+
+validate_backend() {
+	local filesystem_type
+	case "$BACKEND" in
+	sftp)
+		[[ "$REPOSITORY" == sftp:* ]] || die "SFTP repositories must start with sftp:, for example sftp:user@host:/srv/restic"
+		;;
+	smb)
+		require_cmd findmnt
+		[[ "$REPOSITORY" == /* ]] || die "SMB repositories must use an absolute path to an existing mounted share."
+		[[ -d "$REPOSITORY" ]] || die "SMB repository path is not a directory: $REPOSITORY"
+		filesystem_type=$(findmnt -n -o FSTYPE -T "$REPOSITORY")
+		case "$filesystem_type" in
+		cifs | smb3) ;;
+		*) die "SMB repository path is not on a CIFS/SMB mount: $REPOSITORY" ;;
+		esac
+		;;
+	*) die "Unsupported backend: ${BACKEND:-<empty>}. Use sftp or smb." ;;
+	esac
+}
+
+prepare_restic() {
+	require_cmd restic
+	resolve_configuration
+	[[ -n "$REPOSITORY" ]] || die "Repository is required. Use --repo, --config, or RESTIC_REPOSITORY."
+	[[ -n "$PASSWORD_FILE" ]] || die "Password file is required. Use --password-file, --config, or RESTIC_PASSWORD_FILE."
+	validate_backend
+	validate_password_file
+	RESTIC_ARGS=(--repo "$REPOSITORY" --password-file "$PASSWORD_FILE")
+}
+
+# ===================================
+# COMMANDS
+# ===================================
+cmd_help() {
+	cat <<EOF
+${BOLD}${SCRIPT_NAME}${NC} - Incremental Restic backups for SFTP or mounted SMB repositories
+
+${BOLD}USAGE:${NC}
+  $SCRIPT_NAME [OPTIONS] COMMAND
+
+${BOLD}COMMANDS:${NC}
+  ${GREEN}init${NC}                Initialize an explicitly configured repository
+  ${GREEN}create${NC}              Create an incremental snapshot
+  ${GREEN}list${NC}                List snapshots
+  ${GREEN}restore${NC}             Restore a snapshot into a dedicated directory
+  ${GREEN}check${NC}               Check repository metadata
+  ${GREEN}help${NC}                Show this help message
+  ${GREEN}version${NC}             Show version
+
+${BOLD}REPOSITORY OPTIONS:${NC}
+  ${YELLOW}--backend <sftp|smb>${NC}       Repository backend
+  ${YELLOW}--repo <REPOSITORY>${NC}         SFTP URL or an existing mounted SMB path
+  ${YELLOW}--password-file <FILE>${NC}     File containing the Restic password; must be mode 600
+  ${YELLOW}--config <FILE>${NC}            Non-executable key=value config file
+
+${BOLD}BACKUP OPTIONS:${NC}
+  ${YELLOW}--dirs <D1,D2>${NC}             Replace the default source paths
+  ${YELLOW}--exclude <PATTERN>${NC}         Add a Restic exclude pattern; repeat as needed
+  ${YELLOW}--snapshot <ID|latest>${NC}      Snapshot to restore (default: latest)
+  ${YELLOW}--dest <DIR>${NC}                Restore target (default: $DESTINATION)
+  ${YELLOW}-q, --quiet${NC}                 Minimize script output
+  ${YELLOW}-d, --debug${NC}                 Enable debug output
+  ${YELLOW}-h, --help${NC}                  Show help
+  ${YELLOW}-v, --version${NC}               Show version
+
+${BOLD}CONFIGURATION:${NC}
+  Precedence: CLI options, config file, environment variables.
+  Config keys: backend, repository, password_file.
+  Environment: RESTIC_BACKUP_BACKEND, RESTIC_REPOSITORY, RESTIC_PASSWORD_FILE.
+
+${BOLD}EXAMPLES:${NC}
+  $SCRIPT_NAME --backend sftp --repo 'sftp:user@host:/srv/restic' --password-file ~/.config/restic/password init
+  $SCRIPT_NAME --config ~/.config/restic-backup/config create
+  $SCRIPT_NAME --config ~/.config/restic-backup/config --snapshot latest --dest ~/Restore/restic restore
+
+${YELLOW}SMB note:${NC} mount the SMB share before running this script. SFTP is the preferred remote backend.
+EOF
+}
+
+cmd_init() {
+	local status
+	if restic "${RESTIC_ARGS[@]}" cat config >/dev/null 2>&1; then
+		die "Repository is already initialized: $REPOSITORY"
+	else
+		status=$?
+	fi
+	[[ "$status" -eq 10 ]] || die "Unable to verify that the repository is absent; refusing to initialize it."
+	log "Initializing repository: $REPOSITORY"
+	restic "${RESTIC_ARGS[@]}" init
+	success "Repository initialized: $REPOSITORY"
+}
+
+cmd_create() {
+	local -a exclude_args=()
+	local -a sources=()
+	local dir pattern
+	for dir in "${DIRS_TO_BACKUP[@]}"; do
+		if [[ -e "$dir" ]]; then
+			sources+=("$dir")
+		else
+			warn "Skipping missing source: $dir"
+		fi
+	done
+	[[ ${#sources[@]} -gt 0 ]] || die "None of the configured backup sources exist."
+	for pattern in "${EXCLUDE_PATTERN[@]}"; do
+		exclude_args+=(--exclude "$pattern")
+	done
+	log "Creating incremental snapshot"
+	restic "${RESTIC_ARGS[@]}" backup "${exclude_args[@]}" "${sources[@]}"
+}
+
+cmd_list() {
+	restic "${RESTIC_ARGS[@]}" snapshots
+}
+
+cmd_restore() {
+	[[ "$DESTINATION" != "$HOME" ]] || die "Refusing to restore directly into $HOME; choose a dedicated --dest directory."
+	mkdir -p "$DESTINATION"
+	log "Restoring snapshot $SNAPSHOT into $DESTINATION"
+	restic "${RESTIC_ARGS[@]}" restore "$SNAPSHOT" --target "$DESTINATION"
+}
+
+cmd_check() {
+	restic "${RESTIC_ARGS[@]}" check
+}
+
+cmd_version() {
+	printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"
+}
+
+# ===================================
+# ARGUMENT PARSING
+# ===================================
+parse_arguments() {
+	local -a extra_dirs=()
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--backend)
+			require_option_value "$@"
+			CLI_BACKEND="$2"
+			shift 2
+			;;
+		--repo)
+			require_option_value "$@"
+			CLI_REPOSITORY="$2"
+			shift 2
+			;;
+		--password-file)
+			require_option_value "$@"
+			CLI_PASSWORD_FILE="$2"
+			shift 2
+			;;
+		--config)
+			require_option_value "$@"
+			CONFIG_FILE="$2"
+			shift 2
+			;;
+		--dirs)
+			require_option_value "$@"
+			IFS=',' read -r -a extra_dirs <<<"$2"
+			DIRS_TO_BACKUP=("${extra_dirs[@]}")
+			shift 2
+			;;
+		--exclude)
+			require_option_value "$@"
+			EXCLUDE_PATTERN+=("$2")
+			shift 2
+			;;
+		--snapshot)
+			require_option_value "$@"
+			SNAPSHOT="$2"
+			shift 2
+			;;
+		--dest)
+			require_option_value "$@"
+			DESTINATION="$2"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		-d | --debug)
+			DEBUG=true
+			shift
+			;;
+		-h | --help)
+			cmd_help
+			exit 0
+			;;
+		-v | --version)
+			cmd_version
+			exit 0
+			;;
+		-*) die "Unknown option: $1" ;;
+		init | create | list | restore | check | help | version)
+			[[ "$COMMAND" == help ]] || die "Multiple commands specified: $COMMAND and $1"
+			COMMAND="$1"
+			shift
+			;;
+		*) die "Unknown command: '$1'. Use '$SCRIPT_NAME help'." ;;
+		esac
+	done
+}
+
+# ===================================
+# MAIN
+# ===================================
+main() {
+	parse_arguments "$@"
+
+	case "$COMMAND" in
+	help) cmd_help ;;
+	version) cmd_version ;;
+	init | create | list | restore | check)
+		prepare_restic
+		"cmd_$COMMAND"
+		;;
+	*) die "Unknown command: '$COMMAND'. Use '$SCRIPT_NAME help'." ;;
+	esac
+}
+
+main "$@"
